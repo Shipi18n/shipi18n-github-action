@@ -1,0 +1,22 @@
+name: Auto Translate
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'locales/en.json'
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Translate locales
+        uses: Shipi18n/shipi18n-github-action@v1
+        with:
+          api-key: ${{ secrets.SHIPI18N_API_KEY }}
+          source-file: 'locales/en.json'
+          target-languages: 'es,fr,de,ja'

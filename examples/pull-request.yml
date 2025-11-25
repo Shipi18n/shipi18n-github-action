@@ -1,0 +1,25 @@
+name: Translation PR
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'locales/en.json'
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create translation PR
+        uses: Shipi18n/shipi18n-github-action@v1
+        with:
+          api-key: ${{ secrets.SHIPI18N_API_KEY }}
+          source-file: 'locales/en.json'
+          target-languages: 'es,fr,de,ja,zh,pt,ru,ko'
+          create-pr: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
