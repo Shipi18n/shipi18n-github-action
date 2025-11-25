@@ -1,0 +1,6 @@
+{
+  "greeting": "Hello, {{name}}!",
+  "welcome": "Welcome to Shipi18n",
+  "message_count_one": "You have {{count}} message",
+  "message_count_other": "You have {{count}} messages"
+}

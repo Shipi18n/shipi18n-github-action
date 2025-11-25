@@ -1,0 +1,24 @@
+name: Test Action
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'test-locales/en.json'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test Shipi18n Action
+        uses: ./
+        with:
+          api-key: ${{ secrets.SHIPI18N_API_KEY }}
+          source-file: 'test-locales/en.json'
+          target-languages: 'es,fr'
+          commit-message: 'test: update translations [skip ci]'
