@@ -16,17 +16,20 @@ async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage
 
   core.info(`🌍 Translating to: ${targetLanguages.join(', ')}`);
 
-  const response = await fetch('https://api.shipi18n.com/v1/translate/json', {
+  const response = await fetch('https://x9527l3blg.execute-api.us-east-1.amazonaws.com/api/translate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
+      'x-api-key': apiKey,
     },
     body: JSON.stringify({
-      content: sourceJson,
+      inputMethod: 'text',
+      text: JSON.stringify(sourceJson),
       sourceLanguage,
-      targetLanguages,
+      targetLanguages: JSON.stringify(targetLanguages),
+      outputFormat: 'json',
       preservePlaceholders: true,
+      saveKeys: false,
     }),
   });
 
@@ -37,13 +40,16 @@ async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage
 
   const result = await response.json();
 
-  // Handle response format
-  if (result.translations) {
-    return result.translations;
-  } else {
-    // Direct language mapping
-    return result;
+  // Filter out non-translation fields (warnings, savedKeys, etc.)
+  const translations = {};
+  for (const [key, value] of Object.entries(result)) {
+    // Skip metadata fields
+    if (!['warnings', 'savedKeys', 'keysSavedCount', 'namespaces', 'namespaceFiles', 'namespaceFileNames'].includes(key)) {
+      translations[key] = value;
+    }
   }
+
+  return translations;
 }
 
 /**
