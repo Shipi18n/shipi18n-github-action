@@ -19,6 +19,48 @@ Automatically translate your i18n locale files in your CI/CD pipeline using [Shi
 - ✅ **Smart Commits** - Commits only when translations change
 - ✅ **Zero Configuration** - Works out of the box with sensible defaults
 
+## Adding Shipi18n to Your Repository
+
+Have an existing project with only English locale files? Shipi18n **automatically creates all language folders** for you.
+
+### Before & After
+
+```
+# BEFORE: You only have English
+locales/
+└── en/
+    ├── common.json
+    └── home.json
+
+# AFTER: Shipi18n creates all target languages
+locales/
+├── en/           ← Your source (you edit this)
+│   ├── common.json
+│   └── home.json
+├── es/           ← Auto-created & translated
+│   ├── common.json
+│   └── home.json
+├── fr/           ← Auto-created & translated
+│   ├── common.json
+│   └── home.json
+├── de/           ← Auto-created & translated
+│   ├── common.json
+│   └── home.json
+└── ja/           ← Auto-created & translated
+    ├── common.json
+    └── home.json
+```
+
+### 3 Steps to Add Translations
+
+**1. Get API Key** → Sign up at [shipi18n.com](https://shipi18n.com) (free, 30 seconds)
+
+**2. Add Secret** → Repository Settings → Secrets → Actions → `SHIPI18N_API_KEY`
+
+**3. Add Workflow** → Create `.github/workflows/translate.yml` (see Quick Start below)
+
+That's it! Push a change to your English files and translations appear automatically via Pull Request.
+
 ## Quick Start
 
 ### 1. Get Your API Key
@@ -41,6 +83,43 @@ Go to your repository settings → Secrets and variables → Actions → New rep
 
 Create `.github/workflows/translate.yml`:
 
+#### Option A: Multiple files in a folder (recommended)
+
+Use this if you have `locales/en/common.json`, `locales/en/home.json`, etc:
+
+```yaml
+name: Auto Translate
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'locales/en/**'  # Watches all files in en folder
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Required for incremental translation
+
+      - uses: Shipi18n/shipi18n-github-action@v1
+        with:
+          api-key: ${{ secrets.SHIPI18N_API_KEY }}
+          source-dir: 'locales/en'        # Folder containing your English files
+          target-languages: 'es,fr,de,ja'
+          create-pr: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+#### Option B: Single file
+
+Use this if you have one file like `locales/en.json`:
+
 ```yaml
 name: Auto Translate
 on:
@@ -59,12 +138,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # Required for incremental translation
+          fetch-depth: 2
 
       - uses: Shipi18n/shipi18n-github-action@v1
         with:
           api-key: ${{ secrets.SHIPI18N_API_KEY }}
-          source-file: 'locales/en.json'
+          source-file: 'locales/en.json'  # Single file
           target-languages: 'es,fr,de,ja'
           create-pr: 'true'
           github-token: ${{ secrets.GITHUB_TOKEN }}
