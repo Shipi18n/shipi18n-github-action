@@ -36171,6 +36171,60 @@ async function discoverFiles(sourceDir) {
 }
 
 /**
+ * Report sync status to Shipi18n API (for dashboard)
+ */
+async function reportSyncStatus(apiKey, data) {
+  try {
+    const response = await fetch('https://x9527l3blg.execute-api.us-east-1.amazonaws.com/api/sync/status', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      core.warning(`Failed to report sync status: ${response.statusText}`);
+      return false;
+    }
+
+    core.info(`📊 Sync status reported to dashboard`);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to report sync status: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Report sync history to Shipi18n API (for dashboard)
+ */
+async function reportSyncHistory(apiKey, data) {
+  try {
+    const response = await fetch('https://x9527l3blg.execute-api.us-east-1.amazonaws.com/api/sync/history', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+      },
+      body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      core.warning(`Failed to report sync history: ${response.statusText}`);
+      return false;
+    }
+
+    core.info(`📜 Sync history recorded`);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to report sync history: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Call Shipi18n API to translate content
  */
 async function callTranslateAPI(apiKey, content, targetLanguages, sourceLanguage, outputFormat) {
@@ -36679,6 +36733,62 @@ async function run() {
     core.setOutput('languages', targetLanguages.join(','));
     core.setOutput('verification-errors', allVerificationIssues.filter(i => i.severity === 'error').length);
     core.setOutput('verification-warnings', allVerificationIssues.filter(i => i.severity === 'warning').length);
+
+    // Get GitHub context for sync reporting
+    const { context } = github;
+    const repoUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}`;
+    const runId = `${context.runId}`;
+    const commitSha = context.sha;
+    const branch = context.ref.replace('refs/heads/', '');
+    const startTime = Date.now();
+
+    // Report sync status for each source file
+    for (const file of sourceFiles) {
+      const sourceContent = sourceContents[file];
+      const totalKeys = sourceContent ? Object.keys(flattenObject(sourceContent)).length : 0;
+
+      // Calculate language status
+      const languages = {};
+      for (const lang of targetLanguages) {
+        languages[lang] = {
+          translated: totalKeys,
+          missing: 0,
+          lastSyncAt: new Date().toISOString()
+        };
+      }
+
+      // Report sync status
+      await reportSyncStatus(apiKey, {
+        repoUrl,
+        sourceFile: file,
+        targetLanguages,
+        totalKeys,
+        languages,
+        status: allVerificationIssues.filter(i => i.severity === 'error').length > 0 ? 'error' : 'synced',
+        lastError: null
+      });
+    }
+
+    // Report sync history (run details)
+    await reportSyncHistory(apiKey, {
+      repoUrl,
+      sourceFile: sourceFiles.join(', '),
+      runId,
+      keysTranslated: totalKeysTranslated,
+      keysDeleted: totalKeysDeleted,
+      filesUpdated: allFilesChanged.length,
+      duration: Date.now() - startTime,
+      status: allVerificationIssues.filter(i => i.severity === 'error').length > 0 ? 'partial' : 'success',
+      verificationIssues: allVerificationIssues.slice(0, 10).map(i => ({
+        type: i.type,
+        severity: i.severity,
+        key: i.key,
+        message: i.message
+      })),
+      prUrl: null, // Will be updated after PR creation
+      commitSha,
+      branch
+    });
 
     // Commit or create PR
     if (allFilesChanged.length > 0) {
