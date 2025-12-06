@@ -32,6 +32,10 @@ inputs:
     description: 'Create a pull request instead of direct commit (true/false)'
     required: false
     default: 'false'
+  incremental:
+    description: 'Only translate changed keys (compares with previous git commit)'
+    required: false
+    default: 'true'
   commit-message:
     description: 'Custom commit message (default: "chore: update translations [skip ci]")'
     required: false

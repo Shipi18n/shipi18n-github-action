@@ -6,6 +6,130 @@ const path = require('path');
 const fetch = require('node-fetch');
 
 /**
+ * Flatten a nested object into dot-notation keys
+ * { a: { b: 1 } } => { 'a.b': 1 }
+ */
+function flattenObject(obj, prefix = '') {
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const newKey = prefix ? `${prefix}.${key}` : key;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      Object.assign(result, flattenObject(value, newKey));
+    } else {
+      result[newKey] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Unflatten dot-notation keys back to nested object
+ * { 'a.b': 1 } => { a: { b: 1 } }
+ */
+function unflattenObject(obj) {
+  const result = {};
+  for (const [key, value] of Object.entries(obj)) {
+    const keys = key.split('.');
+    let current = result;
+    for (let i = 0; i < keys.length - 1; i++) {
+      if (!current[keys[i]]) current[keys[i]] = {};
+      current = current[keys[i]];
+    }
+    current[keys[keys.length - 1]] = value;
+  }
+  return result;
+}
+
+/**
+ * Deep merge two objects (source wins)
+ */
+function deepMerge(target, source) {
+  const result = { ...target };
+  for (const [key, value] of Object.entries(source)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = deepMerge(result[key] || {}, value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Remove keys from target that exist in keysToRemove
+ */
+function removeKeys(target, keysToRemove) {
+  const flatTarget = flattenObject(target);
+  for (const key of keysToRemove) {
+    delete flatTarget[key];
+  }
+  return unflattenObject(flatTarget);
+}
+
+/**
+ * Get the previous version of a file from git
+ */
+async function getPreviousFileContent(filePath) {
+  try {
+    let output = '';
+    await exec.exec('git', ['show', `HEAD~1:${filePath}`], {
+      silent: true,
+      listeners: {
+        stdout: (data) => { output += data.toString(); }
+      },
+      ignoreReturnCode: true
+    });
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect changed, added, and deleted keys between old and new content
+ */
+function detectChangedKeys(oldContent, newContent) {
+  const oldFlat = oldContent ? flattenObject(oldContent) : {};
+  const newFlat = flattenObject(newContent);
+
+  const added = [];
+  const modified = [];
+  const deleted = [];
+
+  // Find added and modified keys
+  for (const [key, value] of Object.entries(newFlat)) {
+    if (!(key in oldFlat)) {
+      added.push(key);
+    } else if (JSON.stringify(oldFlat[key]) !== JSON.stringify(value)) {
+      modified.push(key);
+    }
+  }
+
+  // Find deleted keys
+  for (const key of Object.keys(oldFlat)) {
+    if (!(key in newFlat)) {
+      deleted.push(key);
+    }
+  }
+
+  return { added, modified, deleted };
+}
+
+/**
+ * Extract only specific keys from an object
+ */
+function extractKeys(obj, keys) {
+  const flat = flattenObject(obj);
+  const extracted = {};
+  for (const key of keys) {
+    if (key in flat) {
+      extracted[key] = flat[key];
+    }
+  }
+  return unflattenObject(extracted);
+}
+
+/**
  * Discover all translatable files in a directory
  */
 async function discoverFiles(sourceDir) {
@@ -35,35 +159,9 @@ async function discoverFiles(sourceDir) {
 }
 
 /**
- * Call Shipi18n API to translate a JSON file
+ * Call Shipi18n API to translate content
  */
-async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage) {
-  core.info(`📖 Reading source file: ${sourceFile}`);
-
-  const sourceContent = await fs.readFile(sourceFile, 'utf8');
-
-  // Determine format based on extension
-  const ext = path.extname(sourceFile).toLowerCase();
-  let outputFormat = 'json';
-  if (ext === '.yaml' || ext === '.yml') {
-    outputFormat = 'yaml';
-  }
-
-  // Parse content to validate it
-  let parsedContent;
-  try {
-    if (outputFormat === 'json') {
-      parsedContent = JSON.parse(sourceContent);
-    } else {
-      // For YAML, send as-is
-      parsedContent = sourceContent;
-    }
-  } catch (error) {
-    throw new Error(`Failed to parse ${sourceFile}: ${error.message}`);
-  }
-
-  core.info(`🌍 Translating to: ${targetLanguages.join(', ')}`);
-
+async function callTranslateAPI(apiKey, content, targetLanguages, sourceLanguage, outputFormat) {
   const response = await fetch('https://x9527l3blg.execute-api.us-east-1.amazonaws.com/api/translate', {
     method: 'POST',
     headers: {
@@ -72,7 +170,7 @@ async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage
     },
     body: JSON.stringify({
       inputMethod: 'text',
-      text: outputFormat === 'json' ? JSON.stringify(parsedContent) : parsedContent,
+      text: outputFormat === 'json' ? JSON.stringify(content) : content,
       sourceLanguage,
       targetLanguages: JSON.stringify(targetLanguages),
       outputFormat,
@@ -91,7 +189,6 @@ async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage
   // Filter out non-translation fields (warnings, savedKeys, etc.)
   const translations = {};
   for (const [key, value] of Object.entries(result)) {
-    // Skip metadata fields
     if (!['warnings', 'savedKeys', 'keysSavedCount', 'namespaces', 'namespaceFiles', 'namespaceFileNames'].includes(key)) {
       translations[key] = value;
     }
@@ -101,18 +198,101 @@ async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage
 }
 
 /**
+ * Translate a JSON file (with optional incremental mode)
+ */
+async function translateFile(apiKey, sourceFile, targetLanguages, sourceLanguage, incremental = false) {
+  core.info(`📖 Reading source file: ${sourceFile}`);
+
+  const sourceContent = await fs.readFile(sourceFile, 'utf8');
+
+  // Determine format based on extension
+  const ext = path.extname(sourceFile).toLowerCase();
+  let outputFormat = 'json';
+  if (ext === '.yaml' || ext === '.yml') {
+    outputFormat = 'yaml';
+  }
+
+  // Parse content to validate it
+  let parsedContent;
+  try {
+    if (outputFormat === 'json') {
+      parsedContent = JSON.parse(sourceContent);
+    } else {
+      // For YAML, incremental mode not supported yet
+      parsedContent = sourceContent;
+      incremental = false;
+    }
+  } catch (error) {
+    throw new Error(`Failed to parse ${sourceFile}: ${error.message}`);
+  }
+
+  let contentToTranslate = parsedContent;
+  let deletedKeys = [];
+  let changedKeyCount = 0;
+
+  // Incremental mode: only translate changed keys
+  if (incremental && outputFormat === 'json') {
+    const previousContent = await getPreviousFileContent(sourceFile);
+
+    if (previousContent) {
+      try {
+        const previousParsed = JSON.parse(previousContent);
+        const changes = detectChangedKeys(previousParsed, parsedContent);
+
+        const keysToTranslate = [...changes.added, ...changes.modified];
+        deletedKeys = changes.deleted;
+        changedKeyCount = keysToTranslate.length;
+
+        if (keysToTranslate.length === 0 && deletedKeys.length === 0) {
+          core.info(`⏭️ No changes detected, skipping translation`);
+          return { translations: {}, deletedKeys: [], isIncremental: true, changedKeyCount: 0 };
+        }
+
+        if (keysToTranslate.length > 0) {
+          core.info(`📊 Incremental mode: ${changes.added.length} added, ${changes.modified.length} modified, ${changes.deleted.length} deleted`);
+          contentToTranslate = extractKeys(parsedContent, keysToTranslate);
+        } else {
+          // Only deletions, no translations needed
+          core.info(`📊 Incremental mode: ${changes.deleted.length} key(s) deleted, no translations needed`);
+          return { translations: {}, deletedKeys, isIncremental: true, changedKeyCount: 0 };
+        }
+      } catch (e) {
+        core.warning(`Could not parse previous version, falling back to full translation: ${e.message}`);
+        incremental = false;
+      }
+    } else {
+      core.info(`📊 No previous version found, performing full translation`);
+      incremental = false;
+    }
+  }
+
+  const keyCount = Object.keys(flattenObject(contentToTranslate)).length;
+  core.info(`🌍 Translating ${keyCount} key(s) to: ${targetLanguages.join(', ')}`);
+
+  const translations = await callTranslateAPI(apiKey, contentToTranslate, targetLanguages, sourceLanguage, outputFormat);
+
+  return {
+    translations,
+    deletedKeys,
+    isIncremental: incremental,
+    changedKeyCount: incremental ? changedKeyCount : keyCount
+  };
+}
+
+/**
  * Write translated files to disk
  * For single file: outputs to {outputDir}/{lang}.json
  * For multi-file (source-dir): outputs to {outputDir}/{lang}/{filename}.json
+ * In incremental mode: merges with existing files and removes deleted keys
  */
-async function writeTranslatedFiles(translations, outputDir, sourceFile, useLanguageFolders = false) {
+async function writeTranslatedFiles(translations, outputDir, sourceFile, useLanguageFolders = false, deletedKeys = [], isIncremental = false) {
   const filesChanged = [];
   const filename = path.basename(sourceFile);
   const ext = path.extname(sourceFile);
 
   core.info(`📝 Writing translated files to: ${outputDir}`);
 
-  for (const [lang, content] of Object.entries(translations)) {
+  for (const [lang, newContent] of Object.entries(translations)) {
     let outputFile;
 
     if (useLanguageFolders) {
@@ -125,19 +305,82 @@ async function writeTranslatedFiles(translations, outputDir, sourceFile, useLang
       outputFile = path.join(outputDir, `${lang}${ext}`);
     }
 
+    let finalContent = newContent;
+
+    // In incremental mode, merge with existing file
+    if (isIncremental && typeof newContent === 'object') {
+      try {
+        const existingContent = await fs.readFile(outputFile, 'utf8');
+        const existingParsed = JSON.parse(existingContent);
+
+        // Merge new translations into existing
+        finalContent = deepMerge(existingParsed, newContent);
+
+        // Remove deleted keys
+        if (deletedKeys.length > 0) {
+          finalContent = removeKeys(finalContent, deletedKeys);
+        }
+
+        core.info(`🔄 Merged: ${outputFile}`);
+      } catch (e) {
+        // File doesn't exist or isn't valid JSON, use new content as-is
+        core.info(`✨ New file: ${outputFile}`);
+      }
+    }
+
     // Format content based on type
     let outputContent;
-    if (typeof content === 'string') {
+    if (typeof finalContent === 'string') {
       // YAML content
-      outputContent = content;
+      outputContent = finalContent;
     } else {
       // JSON content
-      outputContent = JSON.stringify(content, null, 2) + '\n';
+      outputContent = JSON.stringify(finalContent, null, 2) + '\n';
     }
 
     await fs.writeFile(outputFile, outputContent, 'utf8');
     filesChanged.push(outputFile);
-    core.info(`✅ Created: ${outputFile}`);
+    core.info(`✅ Saved: ${outputFile}`);
+  }
+
+  return filesChanged;
+}
+
+/**
+ * Remove deleted keys from existing translation files
+ * Used when source keys are deleted but no new translations are needed
+ */
+async function removeDeletedKeysFromFiles(outputDir, sourceFile, targetLanguages, deletedKeys, useLanguageFolders) {
+  const filesChanged = [];
+  const filename = path.basename(sourceFile);
+  const ext = path.extname(sourceFile);
+
+  core.info(`🗑️ Removing ${deletedKeys.length} deleted key(s) from ${targetLanguages.length} language file(s)`);
+
+  for (const lang of targetLanguages) {
+    let outputFile;
+
+    if (useLanguageFolders) {
+      outputFile = path.join(outputDir, lang, filename);
+    } else {
+      outputFile = path.join(outputDir, `${lang}${ext}`);
+    }
+
+    try {
+      const existingContent = await fs.readFile(outputFile, 'utf8');
+      const existingParsed = JSON.parse(existingContent);
+
+      // Remove deleted keys
+      const updatedContent = removeKeys(existingParsed, deletedKeys);
+
+      // Write updated content
+      await fs.writeFile(outputFile, JSON.stringify(updatedContent, null, 2) + '\n', 'utf8');
+      filesChanged.push(outputFile);
+      core.info(`🗑️ Updated: ${outputFile}`);
+    } catch (e) {
+      // File doesn't exist, skip
+      core.info(`⏭️ Skipping ${outputFile} (not found)`);
+    }
   }
 
   return filesChanged;
@@ -266,6 +509,7 @@ async function run() {
     const outputDir = core.getInput('output-dir');
     const sourceLanguage = core.getInput('source-language') || 'en';
     const createPR = core.getInput('create-pr') === 'true';
+    const incremental = core.getInput('incremental') !== 'false'; // Default true
     const commitMessage = core.getInput('commit-message') || 'chore: update translations [skip ci]';
     const branchName = core.getInput('branch-name') || 'shipi18n-translations';
 
@@ -299,27 +543,62 @@ async function run() {
     }
 
     core.info(`🌍 Target languages: ${targetLanguages.join(', ')}`);
+    if (incremental) {
+      core.info(`⚡ Incremental mode: enabled`);
+    }
 
     // Translate all files
     const allFilesChanged = [];
+    let totalKeysTranslated = 0;
+    let totalKeysDeleted = 0;
 
     for (const file of sourceFiles) {
       core.info(`\n${'─'.repeat(50)}`);
       core.info(`📄 Processing: ${path.basename(file)}`);
 
       // Translate the file
-      const translations = await translateFile(apiKey, file, targetLanguages, sourceLanguage);
+      const result = await translateFile(apiKey, file, targetLanguages, sourceLanguage, incremental);
+
+      // Skip if no changes
+      if (result.isIncremental && result.changedKeyCount === 0 && result.deletedKeys.length === 0) {
+        continue;
+      }
+
+      totalKeysTranslated += result.changedKeyCount;
+      totalKeysDeleted += result.deletedKeys.length;
 
       // Determine output directory
       const effectiveOutputDir = outputDir || (sourceDir ? path.dirname(sourceDir) : path.dirname(file));
 
-      // Write translated files
-      const filesChanged = await writeTranslatedFiles(translations, effectiveOutputDir, file, useLanguageFolders);
-      allFilesChanged.push(...filesChanged);
+      // Write translated files (with merge for incremental mode)
+      if (Object.keys(result.translations).length > 0) {
+        const filesChanged = await writeTranslatedFiles(
+          result.translations,
+          effectiveOutputDir,
+          file,
+          useLanguageFolders,
+          result.deletedKeys,
+          result.isIncremental
+        );
+        allFilesChanged.push(...filesChanged);
+      } else if (result.deletedKeys.length > 0) {
+        // Only deletions, no new translations
+        const filesChanged = await removeDeletedKeysFromFiles(
+          effectiveOutputDir,
+          file,
+          targetLanguages,
+          result.deletedKeys,
+          useLanguageFolders
+        );
+        allFilesChanged.push(...filesChanged);
+      }
     }
 
     core.info(`\n${'─'.repeat(50)}`);
-    core.info(`✅ Translated ${sourceFiles.length} file(s) to ${targetLanguages.length} language(s)`);
+    if (incremental) {
+      core.info(`⚡ Incremental summary: ${totalKeysTranslated} key(s) translated, ${totalKeysDeleted} key(s) deleted`);
+    }
+    core.info(`✅ Processed ${sourceFiles.length} file(s) to ${targetLanguages.length} language(s)`);
     core.info(`📝 Total files created/updated: ${allFilesChanged.length}`);
 
     // Set outputs
