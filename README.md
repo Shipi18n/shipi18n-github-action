@@ -52,6 +52,10 @@ on:
 jobs:
   translate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,7 +66,27 @@ jobs:
           api-key: ${{ secrets.SHIPI18N_API_KEY }}
           source-file: 'locales/en.json'
           target-languages: 'es,fr,de,ja'
+          create-pr: 'true'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+### 4. Enable GitHub Actions (for forks)
+
+If you forked a repository with this workflow:
+
+1. Go to your repository's **Actions** tab
+2. Click **"I understand my workflows, go ahead and enable them"**
+3. GitHub disables workflows on forks by default for security
+
+### 5. Merge Translations
+
+When you push changes to your source locale file:
+
+1. The workflow runs automatically
+2. A **Pull Request** is created with the translations
+3. Review the PR and **merge it** to apply translations to your main branch
+
+> **Tip:** Use `create-pr: 'false'` to commit translations directly without a PR (not recommended for teams).
 
 That's it! Now whenever you update `locales/en.json`, only the changed keys are translated (incremental mode).
 
@@ -422,6 +446,37 @@ source-file: 'src/locales/en.json'
 
 # ❌ Incorrect
 source-file: './src/locales/en.json'
+```
+
+### Workflow not running on forked repository
+
+GitHub disables workflows on forks by default for security. To enable:
+
+1. Go to your fork's **Actions** tab
+2. You'll see a banner: "Workflows aren't being run on this fork"
+3. Click **"I understand my workflows, go ahead and enable them"**
+
+### Translations not appearing in my files
+
+If using `create-pr: 'true'` (recommended), translations are in a **Pull Request**, not directly in main:
+
+1. Go to your repository's **Pull Requests** tab
+2. Find the PR titled "🌍 Update translations"
+3. Review and **merge** the PR to apply translations
+
+To commit directly without PR (not recommended for teams):
+```yaml
+create-pr: 'false'
+```
+
+### Incremental mode shows "No previous version found"
+
+Add `fetch-depth: 2` to your checkout step:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 2  # Required for incremental translation
 ```
 
 ## Documentation & Resources
