@@ -424,7 +424,7 @@ async function callTranslateAPI(apiKey, content, targetLanguages, sourceLanguage
       targetLanguages: JSON.stringify(targetLanguages),
       outputFormat,
       preservePlaceholders: true,
-      saveKeys: false,
+      saveKeys: true,  // Store keys in translation memory (counts toward user's key limit)
     }),
   });
 
