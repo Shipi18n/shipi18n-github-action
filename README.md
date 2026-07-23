@@ -2,7 +2,7 @@
 
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Shipi18n-blue.svg?logo=github)](https://github.com/marketplace/actions/shipi18n-auto-translate)
 [![CI](https://github.com/Shipi18n/shipi18n-github-action/actions/workflows/ci.yml/badge.svg)](https://github.com/Shipi18n/shipi18n-github-action/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![GitHub last commit](https://img.shields.io/github/last-commit/Shipi18n/shipi18n-github-action)](https://github.com/Shipi18n/shipi18n-github-action)
 
 Automatically translate your i18n locale files in your CI/CD pipeline using [Shipi18n](https://shipi18n.com).
@@ -658,7 +658,7 @@ Add `fetch-depth: 2` to your checkout step:
 
 ## License
 
-MIT
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ---
 
