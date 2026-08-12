@@ -1,20 +1,29 @@
 name: 'Shipi18n Auto Translate'
-description: 'Automatically translate your i18n locale files using Shipi18n API'
+description: 'Automatically translate your i18n locale files with your own OpenAI/Anthropic key. Open-source, no hosted API.'
 author: 'Shipi18n'
 branding:
   icon: 'globe'
   color: 'blue'
 
 inputs:
+  provider:
+    description: 'LLM provider: anthropic (default) or openai'
+    required: false
+    default: 'anthropic'
   api-key:
-    description: 'Shipi18n API key'
-    required: true
+    description: 'Your LLM API key. Optional — falls back to the ANTHROPIC_API_KEY / OPENAI_API_KEY env var. Store it as a repo secret.'
+    required: false
+    default: ''
+  model:
+    description: 'Override the provider default model (optional)'
+    required: false
+    default: ''
   source-file:
     description: 'Path to source locale file (e.g., locales/en.json). Use this OR source-dir.'
     required: false
     default: ''
   source-dir:
-    description: 'Path to source locale directory (e.g., locales/en). All JSON/YAML files will be translated. Use this OR source-file.'
+    description: 'Path to source locale directory (e.g., locales/en). All JSON files will be translated. Use this OR source-file.'
     required: false
     default: ''
   target-languages:
@@ -48,22 +57,6 @@ inputs:
     description: 'GitHub token for creating PRs (defaults to GITHUB_TOKEN)'
     required: false
     default: ''
-  verify:
-    description: 'Enable LLM-based translation verification (true/false). Uses Claude Haiku 4.5 to check meaning, placeholders, and quality.'
-    required: false
-    default: 'false'
-  verify-mode:
-    description: 'Verification mode: "quick" (10% sample, fast) or "thorough" (100%, comprehensive)'
-    required: false
-    default: 'quick'
-  self-correct:
-    description: 'Enable self-correcting translations (true/false). Automatically retries failed translations with LLM feedback.'
-    required: false
-    default: 'false'
-  max-retries:
-    description: 'Maximum retry attempts for self-correcting mode (default: 2, max: 5)'
-    required: false
-    default: '2'
   skip-keys:
     description: 'Comma-separated keys to skip from translation (exact paths, e.g., brandName,company.name)'
     required: false
@@ -84,20 +77,6 @@ outputs:
     description: 'Number of verification errors found (missing placeholders, missing keys)'
   verification-warnings:
     description: 'Number of verification warnings found (unusual length ratios)'
-  llm-verification-pass:
-    description: 'Whether LLM verification passed (true/false/skipped)'
-  llm-verification-issues:
-    description: 'JSON array of LLM verification issues found'
-  llm-verification-cost:
-    description: 'Total cost of LLM verification in USD (e.g., "0.000123")'
-  llm-verification-tokens:
-    description: 'Total tokens used for LLM verification (input + output)'
-  self-correct-corrected:
-    description: 'Number of translations that were auto-corrected'
-  self-correct-needs-review:
-    description: 'Number of translations flagged for human review'
-  self-correct-cost:
-    description: 'Total cost of self-correcting in USD'
   skipped-keys-count:
     description: 'Number of keys skipped from translation'
 

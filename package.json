@@ -1,7 +1,7 @@
 {
   "name": "shipi18n-github-action",
-  "version": "1.3.2",
-  "description": "GitHub Action to automatically translate i18n locale files using Shipi18n",
+  "version": "2.0.0",
+  "description": "GitHub Action to translate i18n locale files with your own OpenAI/Anthropic key. No hosted API.",
   "main": "dist/index.js",
   "scripts": {
     "build": "ncc build src/index.js -o dist --source-map --license licenses.txt",
@@ -13,7 +13,10 @@
     "i18n",
     "translation",
     "localization",
-    "shipi18n",
+    "llm",
+    "openai",
+    "anthropic",
+    "bring-your-own-key",
     "automation"
   ],
   "author": "Shipi18n",
@@ -22,7 +25,9 @@
     "@actions/core": "^1.10.1",
     "@actions/exec": "^1.1.1",
     "@actions/github": "^6.0.0",
-    "node-fetch": "^2.7.0"
+    "@anthropic-ai/sdk": "^0.114.0",
+    "@shipi18n/core": "^2.0.0",
+    "openai": "^7.4.0"
   },
   "devDependencies": {
     "@vercel/ncc": "^0.38.1",
