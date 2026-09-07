@@ -1,0 +1,46 @@
+# E2E self-test: runs the action from this checkout (uses: ./) in both modes'
+# check paths — a passing tree and a failing tree — on every push.
+name: selftest
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check-pass:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p /tmp/locales
+          echo '{"a":"Hello {{name}}","b":"Goodbye"}' > /tmp/locales/en.json
+          echo '{"a":"Hola {{name}}","b":"Adiós"}'    > /tmp/locales/es.json
+      - uses: ./
+        id: check
+        with:
+          locales: /tmp/locales
+          source-language: en
+          sarif-file: /tmp/pass.sarif
+      - name: assert outputs
+        run: |
+          test "${{ steps.check.outputs.errors }}" = "0"
+          test -f /tmp/pass.sarif
+  check-fail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          mkdir -p /tmp/locales
+          echo '{"a":"Hello {{name}}","b":"Goodbye"}' > /tmp/locales/en.json
+          echo '{"a":"Hola"}'                          > /tmp/locales/es.json
+      - uses: ./
+        id: check
+        continue-on-error: true
+        with:
+          locales: /tmp/locales
+          source-language: en
+          sarif-file: /tmp/fail.sarif
+      - name: assert failure was detected
+        run: |
+          test "${{ steps.check.outcome }}" = "failure"
+          test "${{ steps.check.outputs.errors }}" = "2"
+          grep -q "placeholder-missing" /tmp/fail.sarif
+          grep -q "docs/rules/missing-key" /tmp/fail.sarif
