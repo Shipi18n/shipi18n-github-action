@@ -1,11 +1,39 @@
-name: 'Shipi18n Auto Translate'
-description: 'Automatically translate your i18n locale files with your own OpenAI/Anthropic key. Open-source, no hosted API.'
+name: 'Shipi18n i18n Check'
+description: 'Check locale files in CI — missing keys, dropped placeholders, collapsed plurals — with no API key. SARIF for inline PR annotations. Optionally translate what fails with your own LLM key.'
 author: 'Shipi18n'
 branding:
-  icon: 'globe'
-  color: 'blue'
+  icon: 'check-circle'
+  color: 'green'
 
 inputs:
+  mode:
+    description: 'What to do: "check" (default — validate locale files, no API key needed) or "translate" (the v2 behavior: translate with your own LLM key)'
+    required: false
+    default: 'check'
+  locales:
+    description: 'check mode: path to the locale root (flat locales/<lang>.json or nested locales/<lang>/<ns>.json)'
+    required: false
+    default: './locales'
+  fail-on:
+    description: 'check mode: exit non-zero on "error" (default), "warning", or "none"'
+    required: false
+    default: 'error'
+  min-coverage:
+    description: 'check mode: fail any language below this coverage percentage (optional)'
+    required: false
+    default: ''
+  ignore-keys:
+    description: 'check mode: comma-separated * globs of keys to silence (path or ns:path)'
+    required: false
+    default: ''
+  glossary:
+    description: 'check mode: path to a glossary JSON (do-not-translate + locked terms, deterministic)'
+    required: false
+    default: ''
+  sarif-file:
+    description: 'check mode: where to write the SARIF report (upload it with github/codeql-action/upload-sarif for inline PR annotations)'
+    required: false
+    default: 'shipi18n.sarif'
   provider:
     description: 'LLM provider: anthropic (default) or openai'
     required: false
@@ -67,6 +95,12 @@ inputs:
     default: ''
 
 outputs:
+  errors:
+    description: 'check mode: number of errors found'
+  warnings:
+    description: 'check mode: number of warnings found'
+  sarif-file:
+    description: 'check mode: path of the written SARIF report'
   files-changed:
     description: 'Number of translation files updated'
   files-list:

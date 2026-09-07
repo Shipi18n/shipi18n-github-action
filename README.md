@@ -1,13 +1,43 @@
 # Shipi18n GitHub Action
 
-Automatically translate your i18n locale files in CI — **bring your own LLM**. Uses your own OpenAI or
-Anthropic key via [`@shipi18n/core`](https://www.npmjs.com/package/@shipi18n/core). Open-source, no
-Shipi18n account, no hosted API.
+**Check your locale files on every PR — no API key, no account.** Missing keys, dropped
+placeholders, collapsed plurals, empty values, untranslated strings and glossary breaches, with
+SARIF output so GitHub annotates the failing keys inline. Every finding links to its
+[rule page](https://shipi18n.com/docs/rules/missing-key).
 
-On each change to your source locale, the action translates new/changed keys into every target
-language, verifies placeholders and key consistency, and commits the result (or opens a PR).
+The same action can also **translate** what fails, with your own OpenAI or Anthropic key
+(`mode: translate` — the v2 behavior, unchanged).
 
-## Quickstart
+## Quickstart — check mode (v3 default)
+
+```yaml
+name: i18n check
+on: [pull_request]
+permissions:
+  contents: read
+  security-events: write   # for the SARIF upload
+jobs:
+  i18n:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Shipi18n/shipi18n-github-action@v3
+        with:
+          locales: ./locales
+          source-language: en
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: shipi18n.sarif
+```
+
+Fails the job on errors (configurable with `fail-on: warning|none`, `min-coverage`, `ignore-keys`,
+`glossary`). Zero model calls — nothing to pay for and nothing to leak.
+
+> **v2 → v3:** the default `mode` is now `check`. Pins to `@v2` keep the old translate-on-push
+> behavior; to translate with v3, set `mode: translate`.
+
+## Translate mode
 
 ```yaml
 # .github/workflows/translate.yml
@@ -26,10 +56,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2   # needed for incremental mode (diff vs previous commit)
-      - uses: Shipi18n/shipi18n-github-action@v2
+      - uses: Shipi18n/shipi18n-github-action@v3
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
+          mode: translate
           provider: anthropic
           source-file: locales/en.json
           target-languages: es,fr,de,ja
@@ -39,6 +70,21 @@ Store your LLM key as a repository secret (`ANTHROPIC_API_KEY` or `OPENAI_API_KE
 `env:`. The key is used to call **your** LLM directly — nothing is sent to a Shipi18n server.
 
 ## Inputs
+
+**Check mode:**
+
+| Input | Default | Description |
+| --- | --- | --- |
+| `mode` | `check` | `check` (validate, no key) or `translate` (v2 behavior) |
+| `locales` | `./locales` | Locale root — flat `locales/<lang>.json` or nested `locales/<lang>/<ns>.json` |
+| `source-language` | `en` | Source language code |
+| `fail-on` | `error` | Fail the job on `error`, `warning`, or `none` |
+| `min-coverage` | — | Fail any language below this coverage % |
+| `ignore-keys` | — | Comma-separated `*` globs of keys to silence |
+| `glossary` | — | Glossary JSON path (do-not-translate + locked terms) |
+| `sarif-file` | `shipi18n.sarif` | Where the SARIF report is written |
+
+**Translate mode:**
 
 | Input | Default | Description |
 | --- | --- | --- |
@@ -60,8 +106,9 @@ Store your LLM key as a repository secret (`ANTHROPIC_API_KEY` or `OPENAI_API_KE
 
 ## Outputs
 
-`files-changed`, `files-list`, `languages`, `verification-errors`, `verification-warnings`,
-`skipped-keys-count`.
+Check mode: `errors`, `warnings`, `sarif-file`.
+Translate mode: `files-changed`, `files-list`, `languages`, `verification-errors`,
+`verification-warnings`, `skipped-keys-count`.
 
 ## Modes
 

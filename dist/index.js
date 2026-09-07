@@ -29937,7 +29937,7 @@ const PROVIDER_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' 
  * Lazily import the ESM @shipi18n/core engine from this CommonJS action.
  */
 async function getCore() {
-  return __nccwpck_require__.e(/* import() */ 400).then(__nccwpck_require__.bind(__nccwpck_require__, 6400));
+  return __nccwpck_require__.e(/* import() */ 450).then(__nccwpck_require__.bind(__nccwpck_require__, 1450));
 }
 
 /**
@@ -30617,10 +30617,76 @@ ${verificationSummary}
 }
 
 /**
+ * check mode (v3 default) — validate the locale tree, write SARIF, no API key.
+ * Exit-code semantics come from core's verdict(), same as the CLI.
+ */
+async function runCheckMode() {
+  const { runCheck, verdict, sarifReport, humanReport } = await getCore();
+
+  const input = core.getInput('locales') || './locales';
+  const failOn = core.getInput('fail-on') || 'error';
+  const minCoverageRaw = core.getInput('min-coverage');
+  const minCoverage = minCoverageRaw ? parseFloat(minCoverageRaw) : undefined;
+  const ignoreKeys = core.getInput('ignore-keys') || undefined;
+  const glossaryPath = core.getInput('glossary');
+  const sarifFile = core.getInput('sarif-file') || 'shipi18n.sarif';
+  const sourceLanguage = core.getInput('source-language') || 'en';
+
+  let glossary;
+  if (glossaryPath) {
+    glossary = JSON.parse(await fs.readFile(glossaryPath, 'utf8'));
+  }
+
+  core.info('🔎 Shipi18n check (no API key, no model calls)');
+  core.info(`📁 Locales: ${input} · source: ${sourceLanguage} · fail-on: ${failOn}`);
+
+  const result = runCheck({ input, source: sourceLanguage, ignoreKeys, glossary });
+  const verdictResult = verdict(result, { failOn, minCoverage });
+
+  const pkgVersion = (__nccwpck_require__(8330)/* .version */ .rE);
+  await fs.writeFile(sarifFile, sarifReport(result, verdictResult, { toolVersion: pkgVersion }) + '\n');
+  core.info(humanReport(result, verdictResult));
+  core.info(`📄 SARIF written to ${sarifFile} — upload with github/codeql-action/upload-sarif for inline PR annotations`);
+
+  core.setOutput('errors', String(result.totals.errors));
+  core.setOutput('warnings', String(result.totals.warnings));
+  core.setOutput('sarif-file', sarifFile);
+
+  // Step summary: visible on the workflow run page. Never let a summary
+  // problem change the check's outcome.
+  try {
+    const rows = [];
+    for (const l of result.languages) {
+      rows.push(`| ${l.lang} | ${(l.stats.coverage * 100).toFixed(1)}% | ${l.stats.errors} | ${l.stats.warnings} |`);
+    }
+    await core.summary
+      .addHeading('Shipi18n check')
+      .addRaw(`\n| Language | Coverage | Errors | Warnings |\n|---|---|---|---|\n${rows.join('\n')}\n`)
+      .addRaw(`\n${verdictResult.ok ? '✅ check passed' : `❌ check failed: ${verdictResult.failures.join('; ')}`}\n`)
+      .write();
+  } catch (err) {
+    core.warning(`could not write step summary: ${err.message}`);
+  }
+
+  if (!verdictResult.ok) {
+    core.setFailed(`check failed: ${verdictResult.failures.join('; ')}`);
+  }
+}
+
+/**
  * Main action logic
  */
 async function run() {
   try {
+    const mode = core.getInput('mode') || 'check';
+    if (mode === 'check') {
+      await runCheckMode();
+      return;
+    }
+    if (mode !== 'translate') {
+      throw new Error(`Unknown mode '${mode}'. Use 'check' or 'translate'.`);
+    }
+
     // Inputs — BYO-LLM: provider + your own LLM key (no Shipi18n account)
     const provider = core.getInput('provider') || 'anthropic';
     const apiKey = core.getInput('api-key') || (PROVIDER_ENV[provider] ? process.env[PROVIDER_ENV[provider]] : undefined);
@@ -30977,11 +31043,27 @@ module.exports = require("node:fs/promises");
 
 /***/ }),
 
+/***/ 8161:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:os");
+
+/***/ }),
+
 /***/ 6760:
 /***/ ((module) => {
 
 "use strict";
 module.exports = require("node:path");
+
+/***/ }),
+
+/***/ 1708:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:process");
 
 /***/ }),
 
@@ -31006,6 +31088,14 @@ module.exports = require("node:stream");
 
 "use strict";
 module.exports = require("node:stream/promises");
+
+/***/ }),
+
+/***/ 7066:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:tty");
 
 /***/ }),
 
@@ -32751,6 +32841,14 @@ function parseParams (str) {
 
 module.exports = parseParams
 
+
+/***/ }),
+
+/***/ 8330:
+/***/ ((module) => {
+
+"use strict";
+module.exports = {"rE":"3.0.0"};
 
 /***/ })
 
