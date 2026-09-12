@@ -1,5 +1,9 @@
 # Shipi18n GitHub Action
 
+[![selftest](https://github.com/Shipi18n/shipi18n-github-action/actions/workflows/selftest.yml/badge.svg)](https://github.com/Shipi18n/shipi18n-github-action/actions/workflows/selftest.yml)
+[![release](https://img.shields.io/github/v/release/Shipi18n/shipi18n-github-action?label=release)](https://github.com/Shipi18n/shipi18n-github-action/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 **Check your locale files on every PR — no API key, no account.** Missing keys, dropped
 placeholders, collapsed plurals, empty values, untranslated strings and glossary breaches, with
 SARIF output so GitHub annotates the failing keys inline. Every finding links to its

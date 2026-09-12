@@ -15,10 +15,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Translate locales
-        uses: Shipi18n/shipi18n-github-action@v2
+        uses: Shipi18n/shipi18n-github-action@v3
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
+          mode: 'translate'   # v3 defaults to check mode; opt into translation
           provider: 'anthropic'
           source-file: 'locales/en.json'
           target-languages: 'es,fr,de,ja'

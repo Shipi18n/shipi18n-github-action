@@ -1,0 +1,34 @@
+# Check mode (v3 default): validate locale files on every PR with NO API key.
+# Fails the check on structural errors and uploads SARIF so GitHub annotates the
+# offending keys inline on the PR diff.
+name: i18n check
+on:
+  pull_request:
+    paths:
+      - 'locales/**'
+
+permissions:
+  contents: read
+  security-events: write   # required for the SARIF upload below
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check locales
+        uses: Shipi18n/shipi18n-github-action@v3
+        with:
+          # mode: check is the default — no api-key needed
+          locales: 'locales'
+          source-language: 'en'
+          fail-on: 'error'          # or 'warning' / 'none'
+          sarif-file: 'shipi18n.sarif'
+
+      # Inline PR annotations on the failing keys (optional but recommended).
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'shipi18n.sarif'
