@@ -30255,6 +30255,14 @@ function runVerification(sourceContent, translatedContent, lang) {
 }
 
 /**
+ * Neutralize markdown-breaking characters before interpolating attacker-influenced
+ * text (locale key names, filenames, judge messages from a PR's own content) into
+ * the PR body. Backticks would break out of a code span; newlines would inject
+ * their own list items or headings. GitHub already sanitizes raw HTML.
+ */
+const mdInline = (s) => String(s).replace(/[`\r\n]/g, ' ').trim();
+
+/**
  * Format verification results for PR description
  */
 function formatVerificationSummary(allIssues) {
@@ -30271,7 +30279,7 @@ function formatVerificationSummary(allIssues) {
     if (errors.length > 0) {
       summary += `**${errors.length} Error(s):**\n`;
       errors.slice(0, 10).forEach(e => {
-        summary += `- ❌ \`${e.key || e.type}\`: ${e.message}\n`;
+        summary += `- ❌ \`${mdInline(e.key || e.type)}\`: ${mdInline(e.message)}\n`;
       });
       if (errors.length > 10) {
         summary += `- ... and ${errors.length - 10} more errors\n`;
@@ -30282,7 +30290,7 @@ function formatVerificationSummary(allIssues) {
     if (warnings.length > 0) {
       summary += `**${warnings.length} Warning(s):**\n`;
       warnings.slice(0, 5).forEach(w => {
-        summary += `- ⚠️ \`${w.key || w.type}\`: ${w.message}\n`;
+        summary += `- ⚠️ \`${mdInline(w.key || w.type)}\`: ${mdInline(w.message)}\n`;
       });
       if (warnings.length > 5) {
         summary += `- ... and ${warnings.length - 5} more warnings\n`;
@@ -30585,7 +30593,7 @@ async function createPullRequest(filesChanged, branchName, commitMessage, token,
   }
 
   const filesSection = Object.entries(filesByLang)
-    .map(([lang, files]) => `**${lang}:**\n${files.map(f => `- \`${f}\``).join('\n')}`)
+    .map(([lang, files]) => `**${mdInline(lang)}:**\n${files.map(f => `- \`${mdInline(f)}\``).join('\n')}`)
     .join('\n\n');
 
   const pr = await octokit.rest.pulls.create({
@@ -30599,7 +30607,7 @@ async function createPullRequest(filesChanged, branchName, commitMessage, token,
 This PR was automatically created by [Shipi18n GitHub Action](https://github.com/Shipi18n/shipi18n-github-action) using your own LLM key.
 
 ### 📄 Source files translated
-${sourceFiles.map(f => `- \`${f}\``).join('\n')}
+${sourceFiles.map(f => `- \`${mdInline(f)}\``).join('\n')}
 
 ### 📝 Files created/updated
 
