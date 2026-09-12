@@ -733,9 +733,9 @@ var __webpack_unused_export__;
 
 __webpack_unused_export__ = ({ value: true });
 exports.KD = __webpack_unused_export__ = void 0;
-const timing_safe_equal_1 = __webpack_require__(2514);
 const base64 = __webpack_require__(973);
 const sha256 = __webpack_require__(4887);
+const timing_safe_equal_1 = __webpack_require__(2514);
 const WEBHOOK_TOLERANCE_IN_SECONDS = 5 * 60;
 class ExtendableError extends Error {
     constructor(message) {
@@ -755,9 +755,6 @@ class WebhookVerificationError extends ExtendableError {
 __webpack_unused_export__ = WebhookVerificationError;
 class Webhook {
     constructor(secret, options) {
-        if (!secret) {
-            throw new Error("Secret can't be empty.");
-        }
         if ((options === null || options === void 0 ? void 0 : options.format) === "raw") {
             if (secret instanceof Uint8Array) {
                 this.key = secret;
@@ -775,15 +772,20 @@ class Webhook {
             }
             this.key = base64.decode(secret);
         }
-    }
-    verify(payload, headers_) {
-        const headers = {};
-        for (const key of Object.keys(headers_)) {
-            headers[key.toLowerCase()] = headers_[key];
+        if (this.key.length === 0) {
+            throw new Error("Secret can't be empty.");
         }
-        const msgId = headers["webhook-id"];
-        const msgSignature = headers["webhook-signature"];
-        const msgTimestamp = headers["webhook-timestamp"];
+    }
+    verify(payload, headers, options) {
+        var _a;
+        const jsonParse = (_a = options === null || options === void 0 ? void 0 : options.jsonParse) !== null && _a !== void 0 ? _a : true;
+        const normalizedHeaders = {};
+        for (const key of Object.keys(headers)) {
+            normalizedHeaders[key.toLowerCase()] = headers[key];
+        }
+        const msgId = normalizedHeaders["webhook-id"];
+        const msgSignature = normalizedHeaders["webhook-signature"];
+        const msgTimestamp = normalizedHeaders["webhook-timestamp"];
         if (!msgSignature || !msgId || !msgTimestamp) {
             throw new WebhookVerificationError("Missing required headers");
         }
@@ -798,7 +800,16 @@ class Webhook {
                 continue;
             }
             if ((0, timing_safe_equal_1.timingSafeEqual)(encoder.encode(signature), encoder.encode(expectedSignature))) {
-                return JSON.parse(payload.toString());
+                const payloadString = payload.toString();
+                if (payloadString === "") {
+                    return undefined;
+                }
+                if (jsonParse) {
+                    return JSON.parse(payloadString);
+                }
+                else {
+                    return undefined;
+                }
             }
         }
         throw new WebhookVerificationError("No matching signature found");
@@ -821,7 +832,7 @@ class Webhook {
     verifyTimestamp(timestampHeader) {
         const now = Math.floor(Date.now() / 1000);
         const timestamp = parseInt(timestampHeader, 10);
-        if (isNaN(timestamp)) {
+        if (Number.isNaN(timestamp)) {
             throw new WebhookVerificationError("Invalid Signature Headers");
         }
         if (now - timestamp > WEBHOOK_TOLERANCE_IN_SECONDS) {
@@ -845,7 +856,7 @@ Webhook.prefix = "whsec_";
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.timingSafeEqual = void 0;
+exports.timingSafeEqual = timingSafeEqual;
 function assert(expr, msg = "") {
     if (!expr) {
         throw new Error(msg);
@@ -871,7 +882,6 @@ function timingSafeEqual(a, b) {
     }
     return out === 0;
 }
-exports.timingSafeEqual = timingSafeEqual;
 //# sourceMappingURL=timing_safe_equal.js.map
 
 /***/ }),
