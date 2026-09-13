@@ -1,5 +1,5 @@
 name: 'Shipi18n i18n Check'
-description: 'Check locale files in CI — missing keys, dropped placeholders, collapsed plurals — with no API key. SARIF for inline PR annotations. Optionally translate what fails with your own LLM key.'
+description: 'Check i18n locale files in CI: missing keys, dropped placeholders, plurals. No API key. SARIF PR annotations.'
 author: 'Shipi18n'
 branding:
   icon: 'check-circle'
