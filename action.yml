@@ -30,6 +30,14 @@ inputs:
     description: 'check mode: path to a glossary JSON (do-not-translate + locked terms, deterministic)'
     required: false
     default: ''
+  severity:
+    description: "check mode: per-rule level overrides, e.g. 'missing-key=off,untranslated=off,orphan-key=off' to report only runtime breakage (error|warning|info|off)"
+    required: false
+    default: ''
+  baseline:
+    description: 'check mode: baseline JSON written by `shipi18n check --write-baseline`; findings already in it do not fail the job'
+    required: false
+    default: ''
   sarif-file:
     description: 'check mode: where to write the SARIF report (upload it with github/codeql-action/upload-sarif for inline PR annotations)'
     required: false
@@ -55,8 +63,9 @@ inputs:
     required: false
     default: ''
   target-languages:
-    description: 'Comma-separated list of target language codes (e.g., es,fr,de)'
-    required: true
+    description: 'translate mode: comma-separated list of target language codes (e.g., es,fr,de)'
+    required: false
+    default: ''
   output-dir:
     description: 'Directory to output translated files (default: same as source file directory)'
     required: false

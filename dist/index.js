@@ -29937,7 +29937,7 @@ const PROVIDER_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' 
  * Lazily import the ESM @shipi18n/core engine from this CommonJS action.
  */
 async function getCore() {
-  return __nccwpck_require__.e(/* import() */ 707).then(__nccwpck_require__.bind(__nccwpck_require__, 7707));
+  return __nccwpck_require__.e(/* import() */ 68).then(__nccwpck_require__.bind(__nccwpck_require__, 3068));
 }
 
 /**
@@ -30629,7 +30629,7 @@ ${verificationSummary}
  * Exit-code semantics come from core's verdict(), same as the CLI.
  */
 async function runCheckMode() {
-  const { runCheck, verdict, sarifReport, humanReport } = await getCore();
+  const { runCheck, verdict, sarifReport, humanReport, parseSeverity, applyPolicy } = await getCore();
 
   const input = core.getInput('locales') || './locales';
   const failOn = core.getInput('fail-on') || 'error';
@@ -30639,6 +30639,8 @@ async function runCheckMode() {
   const glossaryPath = core.getInput('glossary');
   const sarifFile = core.getInput('sarif-file') || 'shipi18n.sarif';
   const sourceLanguage = core.getInput('source-language') || 'en';
+  const severitySpec = core.getInput('severity');
+  const baselinePath = core.getInput('baseline');
 
   let glossary;
   if (glossaryPath) {
@@ -30649,6 +30651,25 @@ async function runCheckMode() {
   core.info(`📁 Locales: ${input} · source: ${sourceLanguage} · fail-on: ${failOn}`);
 
   const result = runCheck({ input, source: sourceLanguage, ignoreKeys, glossary });
+
+  // Same policy layer as the CLI's --severity / --baseline: without it a real
+  // catalog reports every missing and untranslated key, and nobody adopts that.
+  const severity = severitySpec ? parseSeverity(severitySpec) : undefined;
+  let baseline;
+  if (baselinePath) {
+    try {
+      baseline = JSON.parse(await fs.readFile(baselinePath, 'utf8'));
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw new Error(`cannot read baseline ${baselinePath}: ${err.message}`);
+      core.warning(`baseline ${baselinePath} not found — reporting all findings`);
+    }
+  }
+  if (severity || baseline) {
+    const s = applyPolicy(result, { severity, baseline });
+    if (s.suppressedBySeverity || s.suppressedByBaseline)
+      core.info(`policy: ${s.suppressedBySeverity || 0} silenced (severity=off), ${s.suppressedByBaseline || 0} baselined`);
+  }
+
   const verdictResult = verdict(result, { failOn, minCoverage });
 
   const pkgVersion = (__nccwpck_require__(8330)/* .version */ .rE);
@@ -32864,7 +32885,7 @@ module.exports = parseParams
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"rE":"3.0.0"};
+module.exports = {"rE":"3.1.0"};
 
 /***/ })
 

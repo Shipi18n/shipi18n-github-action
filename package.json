@@ -1,6 +1,6 @@
 {
   "name": "shipi18n-github-action",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "GitHub Action: check i18n locale files in CI (no API key) — missing keys, placeholder drift, collapsed plurals — with SARIF output. Optionally translate with your own LLM key.",
   "main": "dist/index.js",
   "scripts": {
@@ -26,7 +26,7 @@
     "@actions/exec": "^1.1.1",
     "@actions/github": "^6.0.0",
     "@anthropic-ai/sdk": "^0.114.0",
-    "@shipi18n/core": "^2.6.0",
+    "@shipi18n/core": "^2.12.0",
     "openai": "^7.4.0"
   },
   "devDependencies": {

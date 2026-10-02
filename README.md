@@ -29,6 +29,8 @@ jobs:
         with:
           locales: ./locales
           source-language: en
+          # report only what breaks at runtime; drop this line to also check coverage
+          severity: 'missing-key=off,untranslated=off,orphan-key=off'
       - uses: github/codeql-action/upload-sarif@v3
         if: always()
         with:
@@ -86,6 +88,8 @@ Store your LLM key as a repository secret (`ANTHROPIC_API_KEY` or `OPENAI_API_KE
 | `min-coverage` | — | Fail any language below this coverage % |
 | `ignore-keys` | — | Comma-separated `*` globs of keys to silence |
 | `glossary` | — | Glossary JSON path (do-not-translate + locked terms) |
+| `severity` | — | Per-rule levels, e.g. `missing-key=off,untranslated=off,orphan-key=off` to report only runtime breakage (`error`\|`warning`\|`info`\|`off`) |
+| `baseline` | — | Baseline JSON from `npx @shipi18n/cli check --write-baseline`: existing findings no longer fail the job, new ones do |
 | `sarif-file` | `shipi18n.sarif` | Where the SARIF report is written |
 
 **Translate mode:**
@@ -97,7 +101,7 @@ Store your LLM key as a repository secret (`ANTHROPIC_API_KEY` or `OPENAI_API_KE
 | `model` | provider default | Override the model |
 | `source-file` | — | Source locale file (use this **or** `source-dir`) |
 | `source-dir` | — | Source locale directory — translates every `.json` file |
-| `target-languages` | — | **Required.** Comma-separated codes, e.g. `es,fr,de` |
+| `target-languages` | — | **Required in translate mode.** Comma-separated codes, e.g. `es,fr,de` |
 | `output-dir` | source dir | Where translated files are written |
 | `source-language` | `en` | Source language code |
 | `create-pr` | `false` | Open a PR instead of committing directly |
