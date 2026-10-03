@@ -12908,7 +12908,7 @@ function missingSdkError(provider, sdk) {
   return new Error(
     `The '${provider}' provider requires the '${sdk}' package.\n` +
       `  Install it next to the CLI:  npm i -D @shipi18n/cli ${sdk}\n` +
-      `  then run:                    npx shipi18n <command>\n` +
+      `  then run:                    npx @shipi18n/cli <command>   (uses that local copy)\n` +
       `  If you ran 'npx @shipi18n/cli', installing ${sdk} on its own will not help — ` +
       `that copy of the CLI cannot see your project's node_modules.`
   )
@@ -13529,6 +13529,7 @@ function analyze(ast, acc) {
           arg: n.value,
           ordinal: n.pluralType === 'ordinal',
           categories: Object.keys(n.options).filter((k) => !k.startsWith('=')),
+          exact: Object.keys(n.options).filter((k) => k.startsWith('=')).map((k) => Number(k.slice(1))),
         })
       }
       for (const opt of Object.values(n.options)) analyze(opt.value, acc)
@@ -13559,6 +13560,23 @@ function requiredCategories(lang, ordinal) {
     return [...cats]
   } catch {
     return null // unknown/invalid locale tag — skip the category check
+  }
+}
+
+/**
+ * FP#18: an exact selector covers a category when it lists every integer that
+ * category ever applies to. German `one` is only ever 1, so `=1 {…}` already
+ * handles it; Russian `one` is 1, 21, 31…, so `=1` alone does not.
+ */
+function coveredByExact(lang, ordinal, category, exact) {
+  if (!exact.length) return false
+  try {
+    const pr = new Intl.PluralRules(lang.replace(/_/g, '-'), { type: ordinal ? 'ordinal' : 'cardinal' })
+    const ints = []
+    for (let n = 0; n <= 200; n++) if (pr.select(n) === category) ints.push(n)
+    return ints.length > 0 && ints.every((n) => exact.includes(n))
+  } catch {
+    return false
   }
 }
 
@@ -13616,7 +13634,9 @@ function checkICU(source, translation, targetLang, path) {
   for (const p of tr.plurals) {
     const required = requiredCategories(targetLang, p.ordinal)
     if (!required) continue
-    const missingCats = required.filter((c) => !p.categories.includes(c))
+    const missingCats = required.filter(
+      (c) => !p.categories.includes(c) && !coveredByExact(targetLang, p.ordinal, c, p.exact || [])
+    )
     if (missingCats.length)
       findings.push({
         type: 'plural-category',
@@ -13672,6 +13692,32 @@ function hasSinglePluralCategory(lang) {
     return false
   }
 }
+// FP#16: an app can define its own pluralRules (vue-i18n `pluralRules`), giving a
+// language more pipe forms than English has — npmx.dev: Arabic 6, Czech 3. More
+// forms than the source is fine while it fits the language's CLDR plural
+// categories — or one more for vue-i18n's zero form, which only exists for
+// count-based plurals ({count}/{n} in the source): npmx pl "{count} odpowiedzi |
+// {count} odpowiedź | …" (zero + one/few/many/other = 5). A blanket +1 hid nocodb's
+// Basque string, whose source counts with {inserted}/{failed}: 3 garbled forms for
+// a 2-category language, still flagged.
+function pluralCategoryCount(lang) {
+  const tag = String(lang).replace(/_/g, '-')
+  try {
+    // The full CLDR set, fractions included: npmx's Polish rules use one/few/many/other
+    // (+ a zero form = 5), and `other` there only ever fires for non-integers.
+    return new Intl.PluralRules(LANG_ALIASES[tag.toLowerCase()] || tag).resolvedOptions().pluralCategories.length
+  } catch {
+    return 0
+  }
+}
+
+// FP#17: keys like `_comment` carry notes for translators, not UI text
+// (unifideck's captureLogs._comment was flagged in 15 locales).
+const COUNT_ARG = /\{\s*(count|n)\s*\}/
+const countsWithCountArg = (s) => COUNT_ARG.test(s)
+
+const isMetaKey = (path) => /(^|\.)_(comment|comments|note|notes|description|desc|context|meta|todo|doc|docs)$/i.test(path)
+
 const placeholderCount = (str) => (String(str).match(/\{[^{}]+\}/g) || []).length
 const isMergedPlural = (s, t) =>
   placeholderCount(t) > Math.max(...String(s).split('|').map(placeholderCount))
@@ -13779,6 +13825,7 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
   const tgtSet = new Set(tgtKeys)
 
   for (const path of srcKeys) {
+    if (isMetaKey(path)) continue
     if (!tgtSet.has(path)) {
       findings.push({
         type: 'missing-key',
@@ -13889,12 +13936,22 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
     const srcForms = pluralFormCount(s)
     const singleFormOk =
       pluralFormCount(t) === 1 && hasSinglePluralCategory(targetLang) && !isMergedPlural(s, t)
-    if (PIPE_PLURAL_GRAMMARS.has(format) && looksLikePipePlural(s) && pluralFormCount(t) !== srcForms && !singleFormOk) {
+    const moreFormsOk =
+      pluralFormCount(t) > srcForms &&
+      pluralFormCount(t) <= pluralCategoryCount(targetLang) + (countsWithCountArg(s) ? 1 : 0)
+    if (PIPE_PLURAL_GRAMMARS.has(format) && looksLikePipePlural(s) && pluralFormCount(t) !== srcForms && !singleFormOk && !moreFormsOk) {
+      // One form that still carries the right variables is a simplification
+      // ("{count} dependencias más" for every count): grammatically off for some
+      // counts, but nothing breaks, so it warns. One form holding both sentences is
+      // the separator lost (nocodb "… <unk> …"): both render together, an error.
+      const simplified = pluralFormCount(t) === 1 && !isMergedPlural(s, t)
       findings.push({
         type: 'plural-forms',
-        severity: 'error',
+        severity: simplified ? 'warning' : 'error',
         path,
-        message: `source has ${srcForms} plural forms ('|'), ${targetLang} has ${pluralFormCount(t)}`,
+        message: simplified
+          ? `source has ${srcForms} plural forms ('|'), ${targetLang} uses one form for every count`
+          : `source has ${srcForms} plural forms ('|'), ${targetLang} has ${pluralFormCount(t)}`,
         source: s,
         translation: t,
       })
@@ -13915,6 +13972,7 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
   }
 
   for (const path of tgtKeys) {
+    if (isMetaKey(path)) continue
     if (!srcSet.has(path)) {
       findings.push({
         type: 'orphan-key',
@@ -23808,7 +23866,7 @@ const RULE_META = {
   'orphan-key': 'A key present in a translation does not exist in the source language.',
   'placeholder-missing': 'A placeholder from the source string was dropped in the translation.',
   'placeholder-added': 'The translation contains a placeholder the source does not have.',
-  'plural-forms': 'A pipe-separated plural lost one or more of its forms in translation.',
+  'plural-forms': 'A pipe-separated plural came back with the wrong number of forms, or with both forms merged into one string.',
   'plural-category': 'An ICU plural is missing a plural category the target language requires under CLDR.',
   'icu-invalid': 'The source is valid ICU MessageFormat but the translation does not parse as ICU.',
   'empty-value': 'The translation of a non-empty source string is empty.',
