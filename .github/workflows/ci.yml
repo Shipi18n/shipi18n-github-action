@@ -5,6 +5,7 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch: # bump-core.yml runs this on its PR branch
 
 jobs:
   test:

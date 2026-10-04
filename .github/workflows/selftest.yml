@@ -1,7 +1,10 @@
 # E2E self-test: runs the action from this checkout (uses: ./) in both modes'
 # check paths — a passing tree and a failing tree — on every push.
 name: selftest
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch: # bump-core.yml runs this on its PR branch
 permissions:
   contents: read
 jobs:

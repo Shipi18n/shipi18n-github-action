@@ -1,0 +1,99 @@
+# Keep the bundled @shipi18n/core current.
+#
+# The action ships core inside dist/, so a core release reaches action users only
+# when someone bumps it and rebuilds. Nobody did for three weeks: v3.0.1 ran core
+# 2.8.1 while 2.12.0 was out (found 2026-10-02). This job checks npm daily and,
+# when core has moved, opens a PR with the bump and a clean dist/ rebuild.
+#
+# A PR opened with GITHUB_TOKEN does not trigger CI on its own, so the job runs the
+# same smoke check as selftest first, then dispatches ci.yml and selftest.yml on
+# the branch; their results show on the PR. Releasing (tag + moving v3) stays a
+# human decision after merge.
+name: bump-core
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write   # dispatch ci.yml / selftest.yml on the bump branch
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+
+      - name: Compare bundled core with npm
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          have=$(node -p "require('./package-lock.json').packages['node_modules/@shipi18n/core'].version")
+          want=$(curl -fsSL -H 'Cache-Control: no-cache' https://registry.npmjs.org/@shipi18n%2Fcore | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))['dist-tags'].latest")
+          branch="bump/core-$want"
+          echo "bundled $have, npm latest $want"
+          go=true
+          if [ "$have" = "$want" ]; then echo "up to date"; go=false; fi
+          if [ "$go" = true ] && git ls-remote --exit-code --heads origin "$branch" >/dev/null; then echo "branch $branch already exists"; go=false; fi
+          echo "go=$go" >> "$GITHUB_OUTPUT"; echo "have=$have" >> "$GITHUB_OUTPUT"; echo "want=$want" >> "$GITHUB_OUTPUT"; echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Bump core and rebuild dist from clean
+        if: steps.v.outputs.go == 'true'
+        run: |
+          set -euo pipefail
+          npm ci
+          npm install --save "@shipi18n/core@^${{ steps.v.outputs.want }}"
+          rm -rf dist
+          npm run build
+
+      # Same assertions as selftest.yml's check-fail job, against the rebuilt dist.
+      - name: Smoke-test the rebuilt action
+        if: steps.v.outputs.go == 'true'
+        run: |
+          set -uo pipefail
+          mkdir -p /tmp/locales
+          echo '{"a":"Hello {{name}}","b":"Goodbye"}' > /tmp/locales/en.json
+          echo '{"a":"Hola"}'                          > /tmp/locales/es.json
+          out=$(mktemp)
+          INPUT_MODE=check INPUT_LOCALES=/tmp/locales INPUT_SOURCE-LANGUAGE=en INPUT_FAIL-ON=error \
+            INPUT_SARIF-FILE=/tmp/fail.sarif GITHUB_OUTPUT=$out GITHUB_STEP_SUMMARY=/dev/null node dist/index.js
+          code=$?
+          [ "$code" = "1" ] || { echo "expected exit 1, got $code"; exit 1; }
+          grep -q "placeholder-missing" /tmp/fail.sarif
+          grep -q "docs/rules/missing-key" /tmp/fail.sarif
+          echo "smoke test passed"
+
+      - name: Open the PR and run CI on it
+        if: steps.v.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          b="${{ steps.v.outputs.branch }}"; have="${{ steps.v.outputs.have }}"; want="${{ steps.v.outputs.want }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$b"
+          git add package.json package-lock.json dist
+          git commit -m "chore: bundle core $want"
+          git push origin "$b"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "$b" \
+            --title "chore: bundle @shipi18n/core $want" \
+            --body "Automated: npm has \`@shipi18n/core\` $want; the action bundles $have.
+
+          - \`dist/\` rebuilt from clean with \`npm run build\`
+          - smoke test (selftest's failing-tree assertions) passed against the rebuilt dist
+          - ci and selftest are dispatched on this branch; their results show below
+
+          Changes in core: https://github.com/Shipi18n/shipi18n/blob/master/packages/core/CHANGELOG.md
+
+          After merging: bump \`package.json\` version, tag the release, and move \`v3\`."
+          gh workflow run ci.yml --ref "$b"
+          gh workflow run selftest.yml --ref "$b"
