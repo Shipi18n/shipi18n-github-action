@@ -13552,11 +13552,19 @@ const parseICU = (s) => {
  * be pedantic noise. Integer sampling keeps the high-value cases (Russian/
  * Arabic/Polish few·many, reachable at small counts) and drops that noise.
  */
+// Categories CLDR defines that everyday usage doesn't need. Hebrew `two` is the dual
+// (שעתיים), a lexical option for some nouns: "2 שעות" — numeral + plural, the `other`
+// form — is standard. It was a third of all plural warnings on the 74-repo corpus.
+// Arabic's dual is different: "2 ساعات" is ungrammatical, so Arabic `two` stays required.
+const OPTIONAL_CATEGORIES = { he: ['two'], iw: ['two'] }
+
 function requiredCategories(lang, ordinal) {
   try {
-    const pr = new Intl.PluralRules(lang.replace(/_/g, '-'), { type: ordinal ? 'ordinal' : 'cardinal' })
+    const tag = lang.replace(/_/g, '-')
+    const pr = new Intl.PluralRules(tag, { type: ordinal ? 'ordinal' : 'cardinal' })
     const cats = new Set(['other']) // ICU always requires `other`
     for (let n = 0; n <= 200; n++) cats.add(pr.select(n))
+    if (!ordinal) for (const c of OPTIONAL_CATEGORIES[tag.split('-')[0].toLowerCase()] || []) cats.delete(c)
     return [...cats]
   } catch {
     return null // unknown/invalid locale tag — skip the category check
@@ -13753,6 +13761,74 @@ const isDateFormatKey = (path) => /(^|\.)(date|time)\.formats(\.|$)/.test(path)
 const isCldrSingularKey = (path) => /(^|\.)(one|zero)$|_(one|zero)$/.test(path)
 const isCountPlaceholder = (ph) => /^(\{\{?|%\{)(count|n|num|number)\}?\}$/.test(ph)
 
+/**
+ * Key-based plurals: i18next suffixes (`items_one`, `items_ordinal_few`) and nested
+ * category keys (`items.one` — Rails YAML, Android <plurals>, .xcstrings variations).
+ * Each language has its own CLDR categories, so the key set legitimately differs from
+ * the source: Polish adds `_few`/`_many`, Japanese has only `_other`. Compared key by
+ * key, a correct Polish file read as two orphans ("delete this key"), a correct
+ * Japanese one failed on a missing `_one`, and Polish with only one/other passed.
+ */
+const PLURAL_CATS = new Set(['zero', 'one', 'two', 'few', 'many', 'other'])
+const SUFFIX_PLURAL = /^(.+?)_(ordinal_)?(zero|one|two|few|many|other)$/
+const NESTED_PLURAL = /^(.+)\.(zero|one|two|few|many|other)$/
+const pluralKey = (g, cat) => (g.nested ? `${g.base}.${cat}` : `${g.base}_${g.ordinal ? 'ordinal_' : ''}${cat}`)
+
+function pluralGroupOf(path) {
+  let m = SUFFIX_PLURAL.exec(path)
+  if (m) return { id: `${m[1]}_${m[2] || ''}`, base: m[1], ordinal: Boolean(m[2]), nested: false, cat: m[3] }
+  m = NESTED_PLURAL.exec(path)
+  if (m) return { id: `${m[1]}.`, base: m[1], ordinal: false, nested: true, cat: m[2] }
+  return null
+}
+
+/** Source plural groups: at least two categories including `other` (a lone `gender_other` is a word, not a plural). */
+function pluralGroups(srcKeys) {
+  const groups = new Map()
+  const children = new Map() // nested parent → every child key name, to require all-category children
+  for (const path of srcKeys) {
+    const dot = path.lastIndexOf('.')
+    if (dot > 0) {
+      const parent = path.slice(0, dot)
+      if (!children.has(parent)) children.set(parent, [])
+      children.get(parent).push(path.slice(dot + 1))
+    }
+    const g = pluralGroupOf(path)
+    if (!g) continue
+    if (!groups.has(g.id)) groups.set(g.id, { ...g, cats: new Set() })
+    groups.get(g.id).cats.add(g.cat)
+  }
+  for (const [id, g] of groups) {
+    const ok =
+      g.cats.has('other') && g.cats.size >= 2 && (!g.nested || children.get(g.base).every((k) => PLURAL_CATS.has(k)))
+    if (!ok) groups.delete(id)
+  }
+  return groups
+}
+
+/** Every CLDR category a language has (incl. ones only reached by decimals or millions), or null if unknown. */
+function allCategories(lang, ordinal) {
+  const tag = String(lang).replace(/_/g, '-')
+  const resolved = LANG_ALIASES[tag.toLowerCase()] || tag
+  try {
+    if (!Intl.PluralRules.supportedLocalesOf(resolved).length) return null
+    return new Intl.PluralRules(resolved, { type: ordinal ? 'ordinal' : 'cardinal' }).resolvedOptions().pluralCategories
+  } catch {
+    return null
+  }
+}
+
+function neededCategories(lang, ordinal) {
+  const tag = String(lang).replace(/_/g, '-')
+  const resolved = LANG_ALIASES[tag.toLowerCase()] || tag
+  try {
+    if (!Intl.PluralRules.supportedLocalesOf(resolved).length) return null
+  } catch {
+    return null
+  }
+  return requiredCategories(resolved, ordinal)
+}
+
 /** Heuristic for "probably untranslated": multi-word and contains letters. */
 const looksTranslatable = (str) => /\s/.test(str.trim()) && /[a-zA-Z]/.test(str)
 
@@ -13824,8 +13900,38 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
   const tgtKeys = Object.keys(tgt)
   const tgtSet = new Set(tgtKeys)
 
+  // Key-based plurals, per this target language (see PLURAL_CATS above).
+  const exemptMissing = new Set() // source categories this language doesn't have (ja `items_one`)
+  const extraForms = new Map() // target-only categories it does have (pl `items_few`) → source `other` key
+  const pluralFindings = []
+  for (const g of pluralGroups(srcKeys).values()) {
+    const needed = neededCategories(targetLang, g.ordinal)
+    const all = allCategories(targetLang, g.ordinal)
+    if (!needed || !all) continue
+    const has = [...PLURAL_CATS].filter((c) => tgtSet.has(pluralKey(g, c)))
+    for (const c of g.cats) {
+      if (c !== 'other' && c !== 'zero' && !all.includes(c)) exemptMissing.add(pluralKey(g, c))
+    }
+    for (const c of has) {
+      if (!g.cats.has(c) && (all.includes(c) || c === 'zero')) extraForms.set(pluralKey(g, c), pluralKey(g, 'other'))
+    }
+    if (!has.length) continue // nothing translated yet: the missing `other` key already reports it
+    const lacking = [...PLURAL_CATS].filter((c) => needed.includes(c) && !has.includes(c) && !g.cats.has(c))
+    if (lacking.length) {
+      pluralFindings.push({
+        type: 'plural-category',
+        severity: 'warning',
+        path: g.nested ? g.base : `${g.base}${g.ordinal ? '_ordinal' : ''}`,
+        missing: lacking,
+        message: `plural is missing CLDR ${targetLang} categor${lacking.length > 1 ? 'ies' : 'y'} ${lacking.join(', ')} (has ${has.join(', ')})`,
+        keys: lacking.map((c) => pluralKey(g, c)),
+      })
+    }
+  }
+
   for (const path of srcKeys) {
     if (isMetaKey(path)) continue
+    if (!tgtSet.has(path) && exemptMissing.has(path)) continue
     if (!tgtSet.has(path)) {
       findings.push({
         type: 'missing-key',
@@ -13973,6 +14079,29 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
 
   for (const path of tgtKeys) {
     if (isMetaKey(path)) continue
+    if (extraForms.has(path)) {
+      // A form the source language lacks (pl `items_few`): check it against the source's `other`.
+      const s = src[extraForms.get(path)]
+      const t = tgt[path]
+      if (typeof s === 'string' && typeof t === 'string' && t.trim() !== '' && !/(^|\.|_)zero$/.test(path)) {
+        const { missing } = validatePlaceholders(s, t, { format })
+        // Only the count dropped: Arabic `two` is "دقيقتان" ("two minutes"), no digit — like English `one`.
+        // Still worth a look (Ukrainian `few` hard-coding "1 хвилини" is wrong for 2–4), but nothing breaks.
+        // Any other placeholder dropped is a broken variable.
+        const countOnly = !/\{\s*\}/.test(t) && missing.every(isCountPlaceholder)
+        if (missing.length)
+          findings.push({
+            type: 'placeholder-missing',
+            severity: countOnly ? 'warning' : 'error',
+            path,
+            missing,
+            message: `dropped ${missing.join(', ')}${countOnly ? ' (count left out of a plural form — check the text is right for every number in this category)' : ''}`,
+            source: s,
+            translation: t,
+          })
+      }
+      continue
+    }
     if (!srcSet.has(path)) {
       findings.push({
         type: 'orphan-key',
@@ -13983,7 +14112,9 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
     }
   }
 
+  findings.push(...pluralFindings)
   const missingCount = findings.filter((f) => f.type === 'missing-key').length
+  const counted = srcKeys.length - [...exemptMissing].filter((p) => !tgtSet.has(p)).length
   return {
     findings,
     stats: {
@@ -13992,7 +14123,7 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
       missing: missingCount,
       errors: findings.filter((f) => f.severity === 'error').length,
       warnings: findings.filter((f) => f.severity === 'warning').length,
-      coverage: srcKeys.length ? (srcKeys.length - missingCount) / srcKeys.length : 1,
+      coverage: counted ? (counted - missingCount) / counted : 1,
     },
   }
 }
@@ -14088,10 +14219,10 @@ function parseArbBundle(filesByName) {
  * - state "new" (or a missing localization) means untranslated → the key is
  *   omitted from that language's object, so it surfaces as a missing key.
  * - state "needs_review" / "stale" keeps its value but yields a warning finding.
- * - Plural variations become nested objects; target categories the source does
- *   not declare are checked for placeholder parity against the source's "other"
- *   form instead of being reported as orphans — CLDR category sets legitimately
- *   differ per language (ru needs few/many; en does not).
+ * - Plural variations become nested objects ({ plural: { one, few, … } }). Every
+ *   category is passed through: the core check knows CLDR category sets differ per
+ *   language (ru needs few/many; en does not; ja has only other), checks extra
+ *   forms against the source's "other", and warns on forms a language needs.
  */
 
 
@@ -14162,29 +14293,11 @@ function parseXcstrings(parsed) {
       }
 
       if (loc.variations?.plural) {
-        const srcPlural = typeof srcValue === 'object' ? srcValue.plural : null
-        const srcCats = srcPlural ? Object.keys(srcPlural) : []
-        const reference = srcPlural ? (srcPlural.other ?? Object.values(srcPlural)[0]) : srcValue
         const kept = {}
         for (const [cat, node] of Object.entries(loc.variations.plural)) {
           const value = unitValue(node)
           if (value == null || unitState(node) === 'new') continue
-          if (!srcPlural || srcCats.includes(cat)) {
-            kept[cat] = value // shared category → normal parity + placeholder checks
-          } else if (typeof reference === 'string') {
-            // Extra CLDR category (ru "few"/"many"): legitimate, not an orphan —
-            // but its placeholders must still match the source.
-            const { missing } = validatePlaceholders(reference, value, { format: 'apple' })
-            if (missing.length) {
-              findings.push({
-                lang,
-                path: `${key}.plural.${cat}`,
-                type: 'placeholder-missing',
-                severity: 'error',
-                message: `dropped ${missing.join(', ')}`,
-              })
-            }
-          }
+          kept[cat] = value
         }
         if (Object.keys(kept).length) languages[lang][key] = { plural: kept }
       }
@@ -21725,8 +21838,11 @@ function parsePo(text) {
  *          <unit id="k"><segment state=".."><source/><target/></segment></unit>  (nestable in <group>)
  *
  * Inline placeholder markup (<ph>%s</ph>, <g>, <x/>) is captured by concatenating
- * element text, so a placeholder inside <ph> is still checked. Placeholders that
- * live ONLY in an equiv-text/equivText attribute are a known gap (v1). XML
+ * element text, so a placeholder inside <ph> is still checked. An EMPTY inline
+ * placeholder — Angular's <x id="INTERPOLATION"/>, XLIFF 2.0's <ph id="0" equiv="…"/>
+ * — has no text, so it is represented as {x_INTERPOLATION} / {ph_0}: dropping one
+ * in the target is then a placeholder-missing like any other. (Until 2026-10-04
+ * these were invisible, so an Angular app could drop {{ name }} and pass.) XML
  * entities are decoded; external entities/DTDs are not resolved (no XXE).
  */
 
@@ -21746,6 +21862,9 @@ const xliff_parser = new XMLParser({
 const xliff_asArray = (v) => (Array.isArray(v) ? v : v == null ? [] : [v])
 const norm = (l) => (typeof l === 'string' && l ? l.replace(/_/g, '-') : null)
 
+// Inline elements that stand for a placeholder (1.2: x, ph, bx, ex; 2.0: ph, sc, ec).
+const INLINE_PLACEHOLDER = new Set(['x', 'ph', 'bx', 'ex', 'sc', 'ec'])
+
 /** Recursively concatenate text, including inline markup like <ph>%s</ph>. */
 function elemText(node) {
   if (node == null) return ''
@@ -21754,10 +21873,20 @@ function elemText(node) {
   for (const [k, v] of Object.entries(node)) {
     if (k.startsWith('@_')) continue
     if (k === '#text') out += Array.isArray(v) ? v.join('') : String(v)
+    else if (INLINE_PLACEHOLDER.has(k)) for (const el of Array.isArray(v) ? v : [v]) out += inlineText(k, el)
     else if (Array.isArray(v)) out += v.map(elemText).join('')
     else out += elemText(v)
   }
   return out
+}
+
+/** <ph>%s</ph> keeps its text; an empty <x id="INTERPOLATION"/> becomes {x_INTERPOLATION}. */
+function inlineText(tag, el) {
+  const text = elemText(el)
+  if (text.trim()) return text
+  const id = el && typeof el === 'object' ? el['@_id'] ?? el['@_equiv-text'] ?? el['@_equiv'] : undefined
+  // An identifier the placeholder grammars (and ICU) recognise: {x_INTERPOLATION}, {ph_0}.
+  return id != null ? ` {${tag}_${String(id).replace(/[^A-Za-z0-9_]/g, '_')}} ` : ''
 }
 
 // States (either version) that mean "not a finished translation".
@@ -23718,7 +23847,12 @@ const chalkStderr = createChalk({level: stderrColor ? stderrColor.level : 0});
  * added reads as "rename {cuenta} to {count}", grammar-agnostic.
  */
 
-const list = (xs) => xs.join(', ')
+// XLIFF empty inline placeholders are tracked as {x_INTERPOLATION}; name the real markup.
+const shown = (ph) => {
+  const m = /^\{(x|ph|bx|ex|sc|ec)_(.+)\}$/.exec(ph)
+  return m ? `<${m[1]} id="${m[2]}"/>` : ph
+}
+const list = (xs) => xs.map(shown).join(', ')
 
 function hint(f, pair) {
   switch (f.type) {
@@ -23736,6 +23870,7 @@ function hint(f, pair) {
       return `write ${n} forms separated by a plain '|', each keeping the source form's placeholders`
     }
     case 'plural-category':
+      if (f.keys?.length) return `add ${f.keys.join(', ')}, translated for those counts`
       return 'add the missing plural categories named above to the ICU plural'
     case 'icu-invalid':
       return 'keep the source ICU structure ({arg, plural|select, …}) and translate only the text inside it'
