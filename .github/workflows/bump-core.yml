@@ -59,13 +59,17 @@ jobs:
         if: steps.v.outputs.go == 'true'
         run: |
           set -uo pipefail
+          set +e   # the check is EXPECTED to exit 1 here; the default `bash -e` would abort the step
           mkdir -p /tmp/locales
           echo '{"a":"Hello {{name}}","b":"Goodbye"}' > /tmp/locales/en.json
           echo '{"a":"Hola"}'                          > /tmp/locales/es.json
           out=$(mktemp)
-          INPUT_MODE=check INPUT_LOCALES=/tmp/locales INPUT_SOURCE-LANGUAGE=en INPUT_FAIL-ON=error \
-            INPUT_SARIF-FILE=/tmp/fail.sarif GITHUB_OUTPUT=$out GITHUB_STEP_SUMMARY=/dev/null node dist/index.js
+          # Action inputs keep their hyphens (INPUT_SOURCE-LANGUAGE), which bash can't assign
+          # directly — pass them through env.
+          env 'INPUT_MODE=check' 'INPUT_LOCALES=/tmp/locales' 'INPUT_SOURCE-LANGUAGE=en' 'INPUT_FAIL-ON=error' \
+            'INPUT_SARIF-FILE=/tmp/fail.sarif' "GITHUB_OUTPUT=$out" 'GITHUB_STEP_SUMMARY=/dev/null' node dist/index.js
           code=$?
+          set -e
           [ "$code" = "1" ] || { echo "expected exit 1, got $code"; exit 1; }
           grep -q "placeholder-missing" /tmp/fail.sarif
           grep -q "docs/rules/missing-key" /tmp/fail.sarif
