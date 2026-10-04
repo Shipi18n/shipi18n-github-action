@@ -98,6 +98,6 @@ jobs:
 
           Changes in core: https://github.com/Shipi18n/shipi18n/blob/master/packages/core/CHANGELOG.md
 
-          After merging: bump \`package.json\` version, tag the release, and move \`v3\`."
+          After merging: bump \`package.json\` version, **rebuild dist** (it inlines the version for SARIF), tag the release, and move \`v3\`."
           gh workflow run ci.yml --ref "$b"
           gh workflow run selftest.yml --ref "$b"
