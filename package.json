@@ -26,7 +26,7 @@
     "@actions/exec": "^1.1.1",
     "@actions/github": "^6.0.0",
     "@anthropic-ai/sdk": "^0.114.0",
-    "@shipi18n/core": "^2.15.0",
+    "@shipi18n/core": "^2.15.1",
     "openai": "^7.4.0"
   },
   "devDependencies": {
