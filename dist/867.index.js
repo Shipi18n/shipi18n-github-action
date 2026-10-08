@@ -1,5 +1,5 @@
-exports.id = 68;
-exports.ids = [68];
+exports.id = 867;
+exports.ids = [867];
 exports.modules = {
 
 /***/ 9214:
@@ -12806,7 +12806,7 @@ exports.visitAsync = visitAsync;
 
 /***/ }),
 
-/***/ 3068:
+/***/ 5867:
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
 "use strict";
@@ -13829,6 +13829,30 @@ function neededCategories(lang, ordinal) {
   return requiredCategories(resolved, ordinal)
 }
 
+/**
+ * Whole numbers above 1 that a language's `one` category also covers — Ukrainian and
+ * Russian `one` is 1, 21, 31…, so a `one` hard-coding "1 хвилина" shows "1" for 21
+ * minutes (good_job #1848). Empty where `one` means exactly 1 (English, German…) and
+ * omitting the count is fine. Two examples are enough for the message.
+ */
+const oneCoversCache = new Map()
+function oneAlsoCovers(lang) {
+  const tag = String(lang).replace(/_/g, '-')
+  if (oneCoversCache.has(tag)) return oneCoversCache.get(tag)
+  const resolved = LANG_ALIASES[tag.toLowerCase()] || tag
+  const out = []
+  try {
+    if (Intl.PluralRules.supportedLocalesOf(resolved).length) {
+      const pr = new Intl.PluralRules(resolved)
+      for (let n = 2; n <= 101 && out.length < 2; n++) if (pr.select(n) === 'one') out.push(n)
+    }
+  } catch {
+    // unknown tag: treat `one` as exactly 1
+  }
+  oneCoversCache.set(tag, out)
+  return out
+}
+
 /** Heuristic for "probably untranslated": multi-word and contains letters. */
 const looksTranslatable = (str) => /\s/.test(str.trim()) && /[a-zA-Z]/.test(str)
 
@@ -13904,7 +13928,13 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
   const exemptMissing = new Set() // source categories this language doesn't have (ja `items_one`)
   const extraForms = new Map() // target-only categories it does have (pl `items_few`) → source `other` key
   const pluralFindings = []
-  for (const g of pluralGroups(srcKeys).values()) {
+  const srcPluralGroups = pluralGroups(srcKeys)
+  // A tree that writes plurals in ICU (`{count, plural, …}`) picks `_one` suffix keys in
+  // app code (`if (count === 1) t('count_one')`, bulwark), not by plural rule: only
+  // nested category keys (Rails, Android, xcstrings) are selected per CLDR there.
+  const icuPlurals = srcKeys.some((k) => typeof src[k] === 'string' && /\{\s*\w+\s*,\s*(?:plural|selectordinal)\s*,/.test(src[k]))
+  const ruleSelectsOne = (g) => Boolean(g) && g.cat === 'one' && srcPluralGroups.has(g.id) && (g.nested || !icuPlurals)
+  for (const g of srcPluralGroups.values()) {
     const needed = neededCategories(targetLang, g.ordinal)
     const all = allCategories(targetLang, g.ordinal)
     if (!needed || !all) continue
@@ -14015,7 +14045,14 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
         const emptyBrace = /\{\s*\}/.test(t)
         const singular = !emptyBrace && isCldrSingularKey(path) && missing.every(isCountPlaceholder)
         const suffix = !emptyBrace && missing.every(isSuffixPlaceholder)
-        const note = singular ? ' (singular form — may be intentional)' : suffix ? ' (English plural-suffix variable — usually intentional)' : ''
+        const covers = singular && ruleSelectsOne(pluralGroupOf(path)) ? oneAlsoCovers(targetLang) : []
+        const note = singular
+          ? covers.length
+            ? ` (${targetLang} "one" also covers ${covers.join(', ')}… — check the text is right for those numbers)`
+            : ' (singular form — may be intentional)'
+          : suffix
+            ? ' (English plural-suffix variable — usually intentional)'
+            : ''
         findings.push({
           type: 'placeholder-missing',
           severity: singular || suffix ? 'warning' : 'error',
@@ -14025,14 +14062,44 @@ function checkTranslations({ source, target, targetLang = 'target', glossary, fo
           source: s,
           translation: t,
         })
+      } else {
+        // English `one` is exactly 1, so "1 minute" with no count is right there and the
+        // comparison above passes. Where this language's `one` also covers 21, 31…, hold
+        // its `one` to the source `other` instead: "1 хвилина" for 21 minutes is wrong.
+        const g = pluralGroupOf(path)
+        const covers = ruleSelectsOne(g) ? oneAlsoCovers(targetLang) : []
+        const other = covers.length ? src[pluralKey(g, 'other')] : undefined
+        if (typeof other === 'string') {
+          const dropped = validatePlaceholders(other, t, { format }).missing.filter(isCountPlaceholder)
+          if (dropped.length && !/\{\s*\}/.test(t)) {
+            findings.push({
+              type: 'placeholder-missing',
+              severity: 'warning',
+              path,
+              missing: dropped,
+              message: `dropped ${dropped.join(', ')} (${targetLang} "one" also covers ${covers.join(', ')}… — check the text is right for those numbers)`,
+              source: other,
+              translation: t,
+            })
+          }
+        }
       }
-      if (added.length) {
+      // A plural form that spells the count where the source's `one` writes "1"
+      // ("%{count} хвилина" for "1 minute") is the fix above, not a stray variable,
+      // as long as the source's `other` uses that count.
+      const g = pluralGroupOf(path)
+      const srcOther = g && srcPluralGroups.has(g.id) ? src[pluralKey(g, 'other')] : undefined
+      const unexpected =
+        typeof srcOther === 'string'
+          ? added.filter((ph) => !(isCountPlaceholder(ph) && srcOther.includes(ph)))
+          : added
+      if (unexpected.length) {
         findings.push({
           type: 'placeholder-added',
           severity: 'warning',
           path,
-          added,
-          message: `unexpected ${added.join(', ')}`,
+          added: unexpected,
+          message: `unexpected ${unexpected.join(', ')}`,
           source: s,
           translation: t,
         })
@@ -22064,6 +22131,95 @@ function scanSecrets(str) {
   return hits
 }
 
+;// CONCATENATED MODULE: ./node_modules/@shipi18n/core/src/duplicates.js
+/**
+ * Duplicate keys in a JSON object. `JSON.parse` (and Go's encoding/json, Python's
+ * json) keep the last value without a word, so a locale file with `"archive"` twice
+ * in one object silently loses a translation (matcha ar.json, 2026-10). The parsed
+ * object can't show it — this scans the text.
+ *
+ * Returns one entry per repeated key: dotted path (same shape as `flatten`), the
+ * 1-based lines of the first and the repeated occurrence, and whether both values
+ * are the same primitive (redundant) or not (one of them is lost).
+ * Assumes valid JSON: call it after `JSON.parse` succeeded.
+ */
+function findDuplicateKeys(text) {
+  const out = []
+  const stack = [] // { obj, path, keys: Map<key, { line, raw }>, key, index }
+  let line = 1
+  let i = 0
+  let target = null // where the next value belongs: { entry } for a first occurrence, { dup } for a repeat
+
+  const join = (path, key) => (path ? `${path}.${key}` : String(key))
+  const top = () => stack[stack.length - 1]
+
+  // Every value passes through here; `raw` is undefined for an object or array.
+  const onValue = (raw) => {
+    if (target?.entry) target.entry.raw = raw
+    if (target?.dup) {
+      const d = target.dup
+      out.push({ path: d.path, line: d.line, firstLine: d.first.line, same: raw !== undefined && raw === d.first.raw })
+    }
+    target = null
+  }
+
+  while (i < text.length) {
+    const c = text[i]
+    if (c === '\n') {
+      line++
+      i++
+    } else if (c === '{' || c === '[') {
+      const parent = top()
+      const path = !parent ? '' : parent.obj ? join(parent.path, parent.key) : join(parent.path, parent.index)
+      onValue(undefined)
+      stack.push({ obj: c === '{', path, keys: new Map(), key: null, index: 0 })
+      i++
+    } else if (c === '}' || c === ']') {
+      stack.pop()
+      i++
+    } else if (c === ',') {
+      if (top() && !top().obj) top().index++
+      i++
+    } else if (c === '"') {
+      const startLine = line
+      let j = i + 1
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === '\\') j++
+        else if (text[j] === '\n') line++
+        j++
+      }
+      const raw = text.slice(i, j + 1)
+      i = j + 1
+      let k = i
+      while (k < text.length && /\s/.test(text[k])) k++
+      const o = top()
+      if (o && o.obj && text[k] === ':') {
+        // a key
+        const key = JSON.parse(raw)
+        const first = o.keys.get(key)
+        if (first) target = { dup: { path: join(o.path, key), line: startLine, first } }
+        else {
+          const entry = { line: startLine, raw: undefined }
+          o.keys.set(key, entry)
+          target = { entry }
+        }
+        o.key = key
+        i = k + 1
+      } else {
+        onValue(raw)
+      }
+    } else if (/[-0-9tfn]/.test(c)) {
+      let j = i
+      while (j < text.length && /[-+0-9.eEtruefalsn]/.test(text[j])) j++
+      onValue(text.slice(i, j))
+      i = j
+    } else {
+      i++ // whitespace, ':'
+    }
+  }
+  return out
+}
+
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __webpack_require__(7598);
 ;// CONCATENATED MODULE: ./node_modules/@shipi18n/core/src/locks.js
@@ -22391,6 +22547,7 @@ async function reviewTranslations({
 
 
 
+
 // Locale files are JSON or YAML. The check logic is format-agnostic once the
 // file is parsed to an object, so support is entirely a parse + discovery
 // concern. `.json` is matched first so it stays the default when both exist.
@@ -22617,6 +22774,20 @@ function lockFindings(locks, lang, ns, sourceObj, targetObj) {
 }
 
 const readJson = (path) => JSON.parse((0,external_node_fs_.readFileSync)(path, 'utf8'))
+
+// JSON.parse keeps the last of two equal keys silently; a repeated key with a different
+// value is a translation nobody will see (matcha ar.json `inbox.archive`).
+function duplicateKeyFindings(file) {
+  return findDuplicateKeys((0,external_node_fs_.readFileSync)(file, 'utf8')).map((d) => ({
+    type: 'duplicate-key',
+    severity: d.same ? 'warning' : 'error',
+    path: d.path,
+    line: d.line,
+    message: d.same
+      ? `key appears twice in one object (lines ${d.firstLine} and ${d.line}) with the same value`
+      : `key appears twice in one object (lines ${d.firstLine} and ${d.line}); parsers keep the last value, so line ${d.firstLine} is never used`,
+  }))
+}
 const countLeaves = (obj, depth = 0) => {
   if (depth > MAX_DEPTH) throw new Error(`locale nesting too deep (exceeds ${MAX_DEPTH} levels)`)
   return Object.values(obj).reduce((n, v) => n + (v && typeof v === 'object' ? countLeaves(v, depth + 1) : 1), 0)
@@ -22664,6 +22835,7 @@ function jsonMode({ input, source, isIgnored, glossary, locks, format }) {
       }
       const { findings, stats } = checkTranslations({ source: sourceData[ns], target: data, targetLang: lang, glossary, format: detected })
       if (locks) findings.push(...lockFindings(locks, lang, ns, sourceData[ns], data))
+      if (/\.json$/i.test(file)) findings.push(...duplicateKeyFindings(file))
       const kept = findings.filter((f) => !isIgnored(ns, f.path))
       addPairs(perLang, lang, ns, sourceData[ns], data, isIgnored)
       namespaces.push({ ns, file: rel(file), findings: kept, stats: statsFrom(kept, stats.sourceKeys, stats.targetKeys) })
@@ -23886,6 +24058,8 @@ function hint(f, pair) {
       return 'use the same value type as the source (string vs object/array)'
     case 'invalid-json':
       return 'fix the file syntax so it parses'
+    case 'duplicate-key':
+      return 'keep one entry for this key (the last one is what users see) and delete the other'
     case 'missing-file':
       return 'create this locale file'
     case 'glossary-violation':
@@ -24008,6 +24182,7 @@ const RULE_META = {
   'untranslated': 'The translation is identical to a multi-word source string.',
   'type-mismatch': 'Source and translation values have different JSON types.',
   'invalid-json': 'A locale file could not be parsed as JSON.',
+  'duplicate-key': 'A JSON object repeats a key; parsers keep the last value and drop the other silently.',
   'missing-file': 'An expected locale file does not exist.',
   'stale-translation': 'The catalog marks this translation as needing review.',
   'glossary-violation': 'A do-not-translate or locked glossary term was not respected.',
@@ -24337,4 +24512,4 @@ function filterChanged(result, changedFiles, { dir = result.dir, cwd = process.c
 
 };
 ;
-//# sourceMappingURL=68.index.js.map
+//# sourceMappingURL=867.index.js.map

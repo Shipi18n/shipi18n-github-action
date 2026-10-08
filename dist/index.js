@@ -29937,7 +29937,7 @@ const PROVIDER_ENV = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY' 
  * Lazily import the ESM @shipi18n/core engine from this CommonJS action.
  */
 async function getCore() {
-  return __nccwpck_require__.e(/* import() */ 68).then(__nccwpck_require__.bind(__nccwpck_require__, 3068));
+  return __nccwpck_require__.e(/* import() */ 867).then(__nccwpck_require__.bind(__nccwpck_require__, 5867));
 }
 
 /**
