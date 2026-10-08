@@ -28,3 +28,6 @@ jobs:
 
       - name: Verify dist exists
         run: test -f dist/index.js
+
+      - name: Test the built action (dist/index.js on pass/fail trees)
+        run: npm test
