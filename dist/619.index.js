@@ -1,6 +1,6 @@
 "use strict";
-exports.id = 379;
-exports.ids = [379];
+exports.id = 619;
+exports.ids = [619];
 exports.modules = {
 
 /***/ 4894:
@@ -46,7 +46,7 @@ exports.findX509Credential = WeakMap.prototype.get.bind(approvedX509Credentials)
 
 /***/ }),
 
-/***/ 8379:
+/***/ 2619:
 /***/ ((__unused_webpack___webpack_module__, __webpack_exports__, __webpack_require__) => {
 
 // ESM COMPAT FLAG
@@ -418,8 +418,149 @@ const safeJSON = (text) => {
 };
 //# sourceMappingURL=values.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/utils/sleep.mjs
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms, ...signals) => new Promise((resolve, reject) => {
+    const activeSignals = [...new Set(signals.filter((signal) => signal != null))];
+    let timeout;
+    let settled = false;
+    const cleanup = () => {
+        for (const signal of activeSignals) {
+            try {
+                signal.removeEventListener('abort', abort);
+            }
+            catch {
+                // Structural signal cleanup must not prevent the promise from settling.
+            }
+        }
+    };
+    const settle = (callback) => {
+        if (settled) {
+            return;
+        }
+        settled = true;
+        if (timeout !== undefined) {
+            clearTimeout(timeout);
+            timeout = undefined;
+        }
+        cleanup();
+        callback();
+    };
+    const abort = () => {
+        settle(() => reject());
+    };
+    if (activeSignals.some((signal) => signal.aborted)) {
+        abort();
+        return;
+    }
+    timeout = setTimeout(() => {
+        settle(resolve);
+    }, ms);
+    for (const signal of activeSignals) {
+        if (settled) {
+            break;
+        }
+        try {
+            signal.addEventListener('abort', abort, { once: true });
+        }
+        catch (error) {
+            settle(() => reject(error));
+        }
+    }
+    if (activeSignals.some((signal) => signal.aborted)) {
+        abort();
+    }
+});
 //# sourceMappingURL=sleep.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/internal/utils/abort.mjs
+// Keep these optional runtime features out of the SDK's ES2020 type requirements.
+// SAFETY: These host features are optional and checked before use; the structural view avoids requiring newer ambient library declarations.
+const weakGlobals = globalThis;
+const finalizer = 
+// oxlint-disable-next-line anti-slop/no-runtime-typeof -- Weak references and finalizers are optional host capabilities, so probe them before constructing either.
+typeof weakGlobals.FinalizationRegistry === 'function'
+    ? new weakGlobals.FinalizationRegistry((cleanup) => {
+        try {
+            cleanup();
+        }
+        catch {
+            // Caller-provided signal methods must not throw out of a GC callback.
+        }
+    })
+    : undefined;
+const callbackOwners = new WeakMap();
+const subscriptions = new WeakMap();
+// This scope receives only a weak reference, so its closures cannot retain the callback.
+function subscribeWeakly(signal, reference, registry) {
+    let subscription = subscriptions.get(signal);
+    if (!subscription) {
+        const callbacks = new Set();
+        const abort = () => {
+            subscriptions.delete(signal);
+            for (const callback of callbacks) {
+                registry.unregister(callback);
+                callback.deref()?.();
+            }
+            callbacks.clear();
+        };
+        subscription = { callbacks, abort };
+        signal.addEventListener('abort', abort, { once: true });
+        subscriptions.set(signal, subscription);
+    }
+    const owner = subscription;
+    owner.callbacks.add(reference);
+    return () => {
+        owner.callbacks.delete(reference);
+        registry.unregister(reference);
+        if (owner.callbacks.size === 0) {
+            if (subscriptions.get(signal) === owner) {
+                subscriptions.delete(signal);
+            }
+            signal.removeEventListener('abort', owner.abort);
+        }
+    };
+}
+// The listener must not retain the shared owner or its other request callbacks.
+function releaseOnAbort(signal, callbacks, abort) {
+    signal.addEventListener('abort', () => callbacks.deref()?.delete(abort), { once: true });
+}
+/** Keep cancellation alive until abort or collection of the response body or bodyless custom response. */
+function retainRequestAbortCallback(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Abort callbacks are retained by any response-body or custom-response owner identity.
+owner, abort, requestSignal) {
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Weak references and finalizers are optional host capabilities, so probe them before constructing either.
+    if (typeof weakGlobals.WeakRef === 'function' && finalizer && !requestSignal.aborted) {
+        let callbacks = callbackOwners.get(owner);
+        if (!callbacks) {
+            callbacks = new Set();
+            callbackOwners.set(owner, callbacks);
+        }
+        callbacks.add(abort);
+        releaseOnAbort(requestSignal, new weakGlobals.WeakRef(callbacks), abort);
+    }
+}
+/**
+ * Share one caller listener without it retaining completed requests. Collection removes
+ * weak subscriptions eventually; a live response body or custom response retains its callback.
+ * Runtimes without weak references keep the existing listener-based behavior.
+ */
+function addRequestAbortListener(signal, abort, requestSignal) {
+    if (signal.aborted) {
+        abort();
+        return () => {
+            // No listener was installed for an already aborted signal.
+        };
+    }
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Weak references and finalizers are optional host capabilities, so probe them before constructing either.
+    if (typeof weakGlobals.WeakRef !== 'function' || !finalizer) {
+        signal.addEventListener('abort', abort, { once: true });
+        return () => signal.removeEventListener('abort', abort);
+    }
+    const reference = new weakGlobals.WeakRef(abort);
+    const cleanup = subscribeWeakly(signal, reference, finalizer);
+    finalizer.register(abort, cleanup, reference);
+    retainRequestAbortCallback(requestSignal, abort, requestSignal);
+    return cleanup;
+}
+//# sourceMappingURL=abort.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/shims.mjs
 /**
  * This module provides internal shims and utility functions for environments where certain Node.js or global types may not be available.
@@ -513,7 +654,7 @@ async function CancelReadableStream(stream) {
 //# sourceMappingURL=shims.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/utils/bytes.mjs
 /** Copies byte arrays into one contiguous `Uint8Array` while preserving their order. */
-function concatBytes(buffers) {
+function bytes_concatBytes(buffers) {
     let length = 0;
     for (const buffer of buffers) {
         length += buffer.length;
@@ -530,6 +671,7 @@ let encodeUTF8_;
 /** Encodes text as UTF-8 bytes, reusing the platform encoder after its first call. */
 function bytes_encodeUTF8(str) {
     let encoder;
+    // SAFETY: Supported runtimes provide the standard TextEncoder/TextDecoder globals; the cast keeps their ambient DOM declarations optional.
     return (encodeUTF8_ ??
         ((encoder = new globalThis.TextEncoder()), (encodeUTF8_ = encoder.encode.bind(encoder))))(str);
 }
@@ -537,6 +679,7 @@ let decodeUTF8_;
 /** Decodes UTF-8 bytes as text, reusing the platform decoder after its first call. */
 function decodeUTF8(bytes) {
     let decoder;
+    // SAFETY: Supported runtimes provide the standard TextEncoder/TextDecoder globals; the cast keeps their ambient DOM declarations optional.
     return (decodeUTF8_ ??
         ((decoder = new globalThis.TextDecoder()), (decodeUTF8_ = decoder.decode.bind(decoder))))(bytes);
 }
@@ -587,6 +730,7 @@ class LineDecoder {
         let binaryChunk;
         if (chunk instanceof ArrayBuffer) {
             binaryChunk = new Uint8Array(chunk);
+            // oxlint-disable-next-line anti-slop/no-runtime-typeof -- The line decoder accepts both text and binary chunks and must select the matching decoding path.
         }
         else if (typeof chunk === 'string') {
             binaryChunk = bytes_encodeUTF8(chunk);
@@ -802,6 +946,7 @@ const sensitiveQueryNames = new Set([
     'token',
     'password',
     'clientsecret',
+    'signingsecret',
     'xamzsecuritytoken',
     'xamzsignature',
     'xamzcredential',
@@ -1004,6 +1149,7 @@ class Stream {
                             logger.error(`From chunk:`);
                             throw new SyntaxError('Error reading response: malformed server-sent event JSON.');
                         }
+                        // SAFETY: Named SSE events use the public stream's event/data envelope; Item is the caller-selected API event contract.
                         yield { event: sse.event, data };
                     }
                 }
@@ -1093,6 +1239,7 @@ class Stream {
                     if (line) {
                         let data;
                         try {
+                            // SAFETY: Item is the caller's NDJSON response contract; JSON syntax is parsed here without a per-resource runtime schema.
                             data = JSON.parse(line);
                         }
                         catch (error) {
@@ -1125,6 +1272,12 @@ class Stream {
     /** Starts consuming this stream; attempting to consume it again throws. */
     [(_Stream_client = new WeakMap(), _Stream_isTeeBranch = new WeakMap(), _Stream_instances = new WeakSet(), Symbol.asyncIterator)]() {
         return this.iterator();
+    }
+    /** Beta-only iterator decoration for Agents helpers, preserving custom stream identity.
+     * @internal
+     */
+    __betaTransformIterator(transform) {
+        this.iterator = transform(this.iterator.bind(this));
     }
     /**
      * Splits the stream into two streams which can be
@@ -1176,10 +1329,13 @@ class Stream {
      * which can be turned back into a Stream with `Stream.fromReadableStream()`.
      * Canceling a response-backed readable aborts its request. Canceling a tee
      * branch discards its buffered events and leaves sibling consumers running.
+     * Read or serialization failures also release the iterator without replacing the original error.
      */
     toReadableStream() {
         const { controller } = this;
         let iter;
+        let cancellation;
+        const cancel = () => (cancellation ?? (cancellation = __classPrivateFieldGet(this, _Stream_instances, "m", _Stream_cancelIterator).call(this, iter, controller)));
         return makeReadableStream({
             start: async () => {
                 iter = this[Symbol.asyncIterator]();
@@ -1195,9 +1351,12 @@ class Stream {
                 }
                 catch (err) {
                     ctrl.error(err);
+                    // An errored readable never invokes its cancel hook. Release the source ourselves,
+                    // without letting failed or stalled cleanup replace the read/serialization error.
+                    void cancel().catch(() => undefined);
                 }
             },
-            cancel: () => __classPrivateFieldGet(this, _Stream_instances, "m", _Stream_cancelIterator).call(this, iter, controller),
+            cancel,
         });
     }
 }
@@ -1207,6 +1366,7 @@ _Stream_cancelIterator = async function _Stream_cancelIterator(iterator, control
         if (!__classPrivateFieldGet(this, _Stream_isTeeBranch, "f")) {
             controller.abort();
         }
+        // oxlint-disable-next-line anti-slop/no-reflect-apply -- Invoke the captured iterator method with its receiver even if a caller-supplied function shadows call.
         await Reflect.apply(returnMethod, iterator, []);
     }
 };
@@ -1344,6 +1504,7 @@ function createAbortableSSESource(body, signal) {
 async function* _iterSSEMessages(response, controller) {
     if (!response.body) {
         controller.abort();
+        // SAFETY: navigator is optional across SDK runtimes; this compatibility branch checks its presence before identifying React Native.
         if (globalThis.navigator !== undefined &&
             globalThis.navigator.product === 'ReactNative') {
             throw new error_OpenAIError(`The default react-native fetch implementation does not support streaming. Please use expo/fetch: https://docs.expo.dev/versions/latest/sdk/expo/#expofetch-api`);
@@ -1382,6 +1543,15 @@ async function* _iterSSEMessages(response, controller) {
             if (sse) {
                 yield sse;
             }
+        }
+        // Servers sometimes omit the trailing blank line that normally
+        // terminates the last event. Flush any in-progress event exactly once.
+        if (signal.aborted) {
+            return;
+        }
+        const pending = sseDecoder.flush();
+        if (pending) {
+            yield pending;
         }
     }
     catch (error) {
@@ -1493,6 +1663,14 @@ class SSEDecoder {
         }
         return null;
     }
+    /**
+     * Emits a pending event at EOF when the stream omitted the trailing blank
+     * line. Returns `null` when no event is in progress so a record that already
+     * ended with a blank line is not delivered twice.
+     */
+    flush() {
+        return this.decode('');
+    }
 }
 function partition(str, delimiter) {
     const index = str.indexOf(delimiter);
@@ -1508,6 +1686,7 @@ function partition(str, delimiter) {
 
 async function defaultParseResponse(client, props) {
     const { response, requestLogID, retryOfRequestLogID, startTime } = props;
+    let jsonBodyLength;
     const body = await (async () => {
         if (props.options.stream) {
             loggerFor(client).debug('response', response.status, response.url, response.headers, response.body);
@@ -1543,6 +1722,7 @@ async function defaultParseResponse(client, props) {
                 return undefined;
             }
             const json = JSON.parse(bodyText);
+            jsonBodyLength = bodyText.length;
             return addRequestID(json, response);
         }
         const text = await response.text();
@@ -1550,13 +1730,15 @@ async function defaultParseResponse(client, props) {
     })().catch((error) => {
         throw asAbortError(error, props.controller.signal);
     });
-    loggerFor(client).debug(`[${requestLogID}] response parsed`, formatRequestDetails({
-        retryOfRequestLogID,
-        url: response.url,
-        status: response.status,
-        body,
-        durationMs: Date.now() - startTime,
-    }));
+    if (client.logLevel === 'debug') {
+        loggerFor(client).debug(`[${requestLogID}] response parsed`, formatRequestDetails({
+            retryOfRequestLogID,
+            url: response.url,
+            status: response.status,
+            body: jsonBodyLength === undefined ? body : { type: 'json', length: jsonBodyLength },
+            durationMs: Date.now() - startTime,
+        }));
+    }
     return body;
 }
 function asAbortError(error, signal) {
@@ -1581,7 +1763,7 @@ function addRequestID(value, response) {
 //# sourceMappingURL=parse.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/version.mjs
 /** Version of the installed OpenAI SDK package. */
-const VERSION = '7.15.0'; // x-release-please-version
+const VERSION = '7.32.0'; // x-release-please-version
 //# sourceMappingURL=version.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/detect-platform.mjs
 
@@ -1804,8 +1986,12 @@ const RFC3986 = 'RFC3986';
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/qs/utils.mjs
 
 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The cached own-property predicate accepts arrays, callable objects, and records.
 let cachedHas;
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Own-property lookup is a generic object primitive and must preserve array and callable inputs.
 const has = (obj, key) => {
+    // SAFETY: Object.hasOwn is an optional native capability; older runtimes use the bound hasOwnProperty fallback with the same own-key semantics.
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- The native or compatibility own-property predicate has the same generic object contract.
     const resolvedHas = cachedHas ?? Object.hasOwn ?? Function.prototype.call.bind(Object.prototype.hasOwnProperty);
     cachedHas = resolvedHas;
     return resolvedHas(obj, key);
@@ -1814,12 +2000,15 @@ function isUnsafePropertyKey(key) {
     return key === '__proto__' || key === 'constructor' || key === 'prototype';
 }
 const maxAdoptedRecords = 10000;
-function isIntrinsicFunctionPrototype(value, key, descriptor) {
+function isIntrinsicFunctionPrototype(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Prototype descriptors are inspected before deciding whether an arbitrary adopted value is callable.
+value, key, descriptor) {
     return (typeof value === 'function' && key === 'prototype' && !descriptor.enumerable && !descriptor.configurable);
 }
 function isObjectLike(value) {
     return value !== null && (typeof value === 'object' || typeof value === 'function');
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Adoption records retain arbitrary merge-target identities for later descriptor validation.
 function rememberAdoption(state, target, key, value) {
     if (!isObjectLike(value)) {
         return;
@@ -1837,6 +2026,7 @@ function sanitizeAdoptions(state) {
     const visited = [];
     const locations = [];
     let inspectedProperties = 0;
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- Adoption validation inspects arbitrary objects, including arrays and functions, before trusting their structure.
     function inspect(value) {
         const known = records.get(value);
         if (known) {
@@ -1887,7 +2077,7 @@ function sanitizeAdoptions(state) {
     const detached = [];
     for (const record of visited) {
         for (const key of record.keys) {
-            const descriptor = Reflect.get(record.descriptors, key);
+            const descriptor = record.descriptors[key];
             if (!descriptor) {
                 continue;
             }
@@ -1957,7 +2147,7 @@ function sanitizeAdoptions(state) {
             if (isUnsafePropertyKey(key)) {
                 continue;
             }
-            const descriptor = Reflect.get(record.descriptors, key);
+            const descriptor = record.descriptors[key];
             if (!descriptor) {
                 continue;
             }
@@ -1988,11 +2178,13 @@ function readPreparedTarget(state, target, key) {
     }
     return target[key];
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Merge targets may contain accessors or custom prototypes, so the preview preserves the generic object boundary.
 function previewTarget(state, target, key) {
     const descriptor = Object.getOwnPropertyDescriptor(target, key);
     if (descriptor && 'value' in descriptor) {
         return descriptor.value;
     }
+    // oxlint-disable-next-line anti-slop/no-reflect-get -- Generic query merging snapshots arbitrary inherited/accessor keys before mutation.
     const value = Reflect.get(target, key, target);
     let prepared = state.preparedTargets.get(target);
     if (!prepared) {
@@ -2025,10 +2217,12 @@ function prepareMergeSource(target, source, state, assign = false) {
     }
     state.inspectedSourceProperties += sourceKeys.length;
     const sourceIsArray = isArray(source);
+    // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- The query merge graph preserves heterogeneous scalar, array, and object values under its existing merge contract.
     const prepared = sourceIsArray ? [] : Object.create(null);
     preparedTargets.set(target, prepared);
     if (isArray(target) && sourceIsArray && !assign) {
         const sourceLength = source.length;
+        // SAFETY: prepared was constructed as an array when sourceIsArray is true, which this branch requires.
         prepared.length = sourceLength;
         for (let index = 0; index < sourceLength; index += 1) {
             if (!(index in source)) {
@@ -2345,6 +2539,7 @@ const push_to_array = function push_to_array(arr, value_or_array) {
     Array.prototype.push.apply(arr, values_isArray(value_or_array) ? value_or_array : [value_or_array]);
 };
 let toISOString;
+// SAFETY: The defaults object supplies the serializer's established non-null option values and RFC formatter; callers still merge their overrides separately.
 const defaults = {
     addQueryPrefix: false,
     allowDots: false,
@@ -2463,12 +2658,14 @@ function inner_stringify(object, prefix, generateArrayPrefix, commaRoundTrip, al
         return adjusted_prefix + '[]';
     }
     for (const key of obj_keys) {
+        // SAFETY: The serializer supports its existing encoded-key wrapper or property key; the branch selects the wrapper value before indexing the object.
         const value = 
         // @ts-ignore
         typeof key === 'object' && key.value !== undefined ? key.value : obj[key];
         if (skipNulls && value === null) {
             continue;
         }
+        // SAFETY: Dot encoding applies the serializer's existing string-key protocol; this cast preserves its legacy mixed key representation.
         // @ts-ignore
         const encoded_key = allowDots && encodeDotInKeys ? key.replace(/\./g, '%2E') : key;
         let key_prefix;
@@ -2956,6 +3153,7 @@ function calculateRefreshAt(expiresAt, lifetimeSeconds, refreshBufferSeconds) {
 }
 const NATIVE_RESPONSE_PROTOTYPE = Response.prototype;
 const READ_NATIVE_RESPONSE_BODY = NATIVE_RESPONSE_PROTOTYPE.arrayBuffer;
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Custom fetch response prototypes are verified through descriptors before trusting their native contract.
 function isResponsePrototype(response, prototype) {
     const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value;
     if (prototype === response ||
@@ -2970,6 +3168,7 @@ function isResponsePrototype(response, prototype) {
         typeof Object.getOwnPropertyDescriptor(prototype, 'ok')?.get === 'function' &&
         typeof Object.getOwnPropertyDescriptor(prototype, 'status')?.get === 'function');
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The prototype walk compares untrusted cross-realm objects by identity and descriptor metadata.
 function isResponseBodyPrototype(prototype, responsePrototype) {
     if (prototype === responsePrototype) {
         return true;
@@ -2982,9 +3181,11 @@ function isResponseBodyPrototype(prototype, responsePrototype) {
         Object.getOwnPropertyDescriptor(constructor, 'prototype')?.value === prototype);
 }
 function decodeNativeResponseBody(body) {
+    // SAFETY: Bun is an optional runtime global; its version is checked before selecting Bun-specific decoding behavior.
     const scope = globalThis;
     return new TextDecoder('utf-8', { ignoreBOM: typeof scope.Bun?.version === 'string' }).decode(body);
 }
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Decoded token JSON remains untrusted until the caller validates its fields.
 async function parseOAuthTokenResponse(response) {
     let readText;
     let responsePrototype = null;
@@ -3021,6 +3222,7 @@ async function parseOAuthTokenResponse(response) {
     }
 }
 function isUnsafeAccessToken(accessToken) {
+    // SAFETY: Bun is an optional runtime global; its version is checked before selecting Bun-specific decoding behavior.
     const scope = globalThis;
     if (typeof scope.Bun?.version === 'string') {
         return /[^\t\u0020-\u007E]|^[\t ]|[\t ]$/u.test(accessToken);
@@ -3050,7 +3252,9 @@ class WorkloadIdentityAuth {
         this.config = {
             identityProviderId,
             serviceAccountId,
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(clientId === undefined ? {} : { clientId }),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(refreshBufferSeconds === undefined ? {} : { refreshBufferSeconds }),
             provider: {
                 tokenType: provider.tokenType,
@@ -3098,6 +3302,7 @@ class WorkloadIdentityAuth {
     }
     async refreshToken(generation) {
         const subjectToken = await this.config.provider.getToken();
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- The token-exchange field dictionary gains an optional client_id after its required fields are initialized.
         const body = {
             grant_type: TOKEN_EXCHANGE_GRANT_TYPE,
             subject_token: subjectToken,
@@ -3141,6 +3346,7 @@ class WorkloadIdentityAuth {
             isUnsafeAccessToken(accessToken)) {
             throw new error_OpenAIError("Token exchange response missing 'access_token' field");
         }
+        // SAFETY: The token response was checked as an object with a valid access token; expires_in is still validated by calculateExpiresAt.
         const expiresIn = tokenResponse.expires_in ?? 3600;
         const expiresAt = calculateExpiresAt(expiresIn, exchangeStartedAt);
         if (this.tokenGeneration === generation) {
@@ -3308,6 +3514,7 @@ var x509_transport_state_namespaceObject = /*#__PURE__*/__webpack_require__.t(x5
 
 
 
+// oxlint-disable-next-line anti-slop/no-runtime-typeof -- The package adapter probes the Node-only registry export before selecting the browser fallback.
 const state = typeof x509_transport_state.findRegisteredX509Transport === 'function' ? x509_transport_state_namespaceObject : x509_transport_state_browser_namespaceObject;
 
 const {
@@ -3463,6 +3670,7 @@ function isX509WorkloadIdentity(identity) {
             }
             break;
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; the traversal checks descriptors rather than assuming a credential-provider subtype.
         providerOwner = Object.getPrototypeOf(providerOwner);
     }
     let current = identity;
@@ -3474,6 +3682,7 @@ function isX509WorkloadIdentity(identity) {
             }
             return discriminator.value === 'x509';
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; the traversal checks descriptors rather than assuming a credential-provider subtype.
         current = Object.getPrototypeOf(current);
     }
     return false;
@@ -3562,9 +3771,11 @@ class X509WorkloadIdentityAuth {
             type: 'x509',
             identityProviderId: __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_identityProviderId, "f"),
             serviceAccountId: __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_serviceAccountId, "f"),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(__classPrivateFieldGet(this, _X509WorkloadIdentityAuth_configuredRefreshBufferMs, "f") === undefined
                 ? {}
                 : { refreshBufferMs: __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_configuredRefreshBufferMs, "f") }),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(__classPrivateFieldGet(this, _X509WorkloadIdentityAuth_configuredRefreshBufferSeconds, "f") === undefined
                 ? {}
                 : { refreshBufferSeconds: __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_configuredRefreshBufferSeconds, "f") }),
@@ -3587,6 +3798,7 @@ class X509WorkloadIdentityAuth {
         if (!defaultHeaders || !requestHeaders) {
             throw new error_OpenAIError('X.509 workload identity requires snapshotted request headers.');
         }
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- The exposed snapshot contract deliberately hides the private request-scope representation.
         return { defaultHeaders, requestHeaders };
     }
     /** Captures enrolled public tenant selectors once before certificate presentation. */
@@ -3744,6 +3956,7 @@ class X509WorkloadIdentityAuth {
         return scope.effectiveSignal ?? scope.request?.signal;
     }
     /** Establishes an independent scope even when concurrent requests share caller options. */
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- Logical request owners are opaque identity tokens; their properties are never read.
     runRequest(operation, requestOwner) {
         return __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_transport, "f").run(async () => {
             const scope = __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_transport, "f").current();
@@ -3764,6 +3977,7 @@ class X509WorkloadIdentityAuth {
         });
     }
     /** Reports whether a public request-building call already belongs to an active logical operation. */
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- Request scope membership compares the opaque caller token by identity only.
     inRequest(requestOwner) {
         const scope = __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_transport, "f").current();
         return scope?.owner === this && scope.requestOwner === requestOwner && scope.phase !== 'authorizing';
@@ -3784,9 +3998,13 @@ class X509WorkloadIdentityAuth {
             wallStartedAt,
             monotonicStartedAt,
             owner: this,
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(deadlineArmed ? { deadlineArmed } : {}),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(request ? { request } : {}),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(effectiveSignal ? { effectiveSignal } : {}),
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(requestOwner ? { requestOwner } : {}),
         };
         return (operation) => __classPrivateFieldGet(this, _X509WorkloadIdentityAuth_transport, "f").resume(scope, async () => {
@@ -4151,6 +4369,7 @@ _a = X509WorkloadIdentityAuth, _X509WorkloadIdentityAuth_identityProviderId = ne
 function normalizeX509CredentialOptions(options) {
     const { credential } = options;
     if (credential === undefined) {
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- Preserve the exported normalization contract when no X.509 credential is configured.
         return { credential, options };
     }
     const registered = x509_transport_state_findX509Credential(credential);
@@ -4164,6 +4383,7 @@ function normalizeX509CredentialOptions(options) {
     if (conflicting.length > 0) {
         throw new error_OpenAIError(`The \`credential\` option cannot be combined with ${conflicting.map((name) => `\`${name}\``).join(', ')}.`);
     }
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The declared ClientOptions return contract supports both normalized and unchanged client options.
     return {
         credential,
         options: {
@@ -4258,6 +4478,7 @@ function prepareX509ClientClone(inherited, overrides, credential, currentlyX509)
             delete inherited.fetchOptions;
         }
     }
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- Preserve the exported clone contract across inherited and replaced credentials and providers.
     return { credential: nextCredential, provider: prepareProviderClone(inherited, overrides) };
 }
 //# sourceMappingURL=x509-credential-options.mjs.map
@@ -4302,6 +4523,7 @@ function toStreamingFile(data, name, options) {
  */
 const checkFileSupport = () => {
     if (typeof File === 'undefined') {
+        // SAFETY: This optional Node global is inspected only to improve the missing-File diagnostic in runtimes without process.
         const { process } = globalThis;
         const isOldNode = typeof process?.versions?.node === 'string' &&
             Number.parseInt(process.versions.node.split('.'), 10) < 20;
@@ -4319,6 +4541,7 @@ const checkFileSupport = () => {
  */
 function makeFile(fileBits, fileName, options) {
     checkFileSupport();
+    // SAFETY: The SDK BlobPart union supports Node and web binary inputs; the native File constructor handles those parts across their differing ambient types.
     return new File(fileBits, fileName ?? 'unknown_file', options);
 }
 /**
@@ -4327,7 +4550,9 @@ function makeFile(fileBits, fileName, options) {
  * Directory components separated by either `/` or `\\` are discarded unless an
  * explicitly supplied `name` or `filename` opts into preserving its path. Preserved
  * paths must be safe and relative, and use forward slashes. Paths inferred from URLs and filesystem streams
- * discard their directories.
+ * discard their directories. URL filenames decode valid UTF-8 percent escapes,
+ * except that ASCII control characters stay escaped for multipart compatibility.
+ * A basename stays encoded if decoding would introduce literal multipart escape sequences.
  */
 function getName(value, options) {
     if (typeof value !== 'object' || value === null) {
@@ -4341,7 +4566,8 @@ function getName(value, options) {
     const url = 'url' in value && value.url && String(value.url);
     if (url) {
         try {
-            return basename(new URL(url).pathname);
+            const filename = basename(new URL(url).pathname);
+            return filename === undefined ? undefined : basename(decodeURLFilename(filename));
         }
         catch {
             return basename(url);
@@ -4352,6 +4578,21 @@ function getName(value, options) {
 }
 function basename(value) {
     return value.split(/[\\/]/).pop() || undefined;
+}
+function decodeURLFilename(filename) {
+    try {
+        const decodedFilename = decodeURIComponent(filename);
+        // Fetch multipart receivers interpret these spellings as CR, LF, or a quote.
+        if (/%(?:0[AD]|22)/i.test(decodedFilename)) {
+            return filename;
+        }
+        // oxlint-disable-next-line no-control-regex -- Multipart parsers reject unescaped ASCII controls in filenames.
+        return decodedFilename.replace(/[\u0000-\u001F\u007F]/gu, encodeURIComponent);
+    }
+    catch {
+        // A malformed escape leaves the original URL segment usable as a filename.
+        return filename;
+    }
 }
 function normalizeFilenamePath(value) {
     const normalized = value.replace(/\\/g, '/');
@@ -4409,6 +4650,7 @@ const supportsFormDataMap = /* @__PURE__ */ new WeakMap();
  * confusing error messages later on.
  */
 function supportsFormData(fetchObject) {
+    // SAFETY: The union has already excluded callable fetch values; the remaining OpenAI client owns the fetch implementation used by this probe.
     const fetch = typeof fetchObject === 'function' ? fetchObject : fetchObject.fetch;
     const cached = supportsFormDataMap.get(fetch);
     if (cached) {
@@ -4418,11 +4660,13 @@ function supportsFormData(fetchObject) {
         try {
             let FetchResponse;
             if ('Response' in fetch) {
+                // SAFETY: Custom fetch implementations may expose their matching Response constructor; the enclosing probe catches incompatible constructors.
                 FetchResponse = fetch.Response;
             }
             else {
                 const response = await fetch('data:,');
                 await response.arrayBuffer();
+                // SAFETY: The successful fetch response supplies the constructor used to test its own FormData support; failures remain inside the probe's catch.
                 FetchResponse = response.constructor;
             }
             const data = new FormData();
@@ -4471,6 +4715,7 @@ const isUploadable = (value) => typeof value === 'object' &&
         isReadableStream(value) ||
         isStreamingFile(value) ||
         isBlob(value));
+// SAFETY: The enclosing object guard and own-key enumeration allow reading these property values without assigning them a trusted value type.
 const hasStreamingUploadableValue = (value) => {
     if (isStreamingFile(value) || isAsyncIterable(value) || isReadableStream(value)) {
         return true;
@@ -4488,6 +4733,7 @@ const hasStreamingUploadableValue = (value) => {
     }
     return false;
 };
+// SAFETY: The enclosing object guard and own-key enumeration allow reading these property values without assigning them a trusted value type.
 const hasUploadableValue = (value) => {
     if (isUploadable(value)) {
         return true;
@@ -4582,6 +4828,7 @@ function* iterateFormValue(key, value) {
     }
 }
 function getStreamingFileName(value, options) {
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The runtime guard validates JavaScript and custom upload values before trusting the StreamingFile brand.
     if (isStreamingFile(value)) {
         const { name } = value;
         if (typeof name !== 'string' || !name) {
@@ -4595,6 +4842,7 @@ function getStreamingFileName(value, options) {
 }
 function getStreamingFileType(value) {
     let type;
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- Runtime upload-brand checks intentionally accept unknown inputs despite the static Uploadable annotation.
     if (isStreamingFile(value) || isBlob(value)) {
         ({ type } = value);
     }
@@ -4616,6 +4864,7 @@ function validateStreamingFileType(type) {
     return type;
 }
 function getStreamingFileData(value) {
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The runtime guard validates the streaming wrapper before accessing its potentially custom data.
     if (isStreamingFile(value)) {
         return value.data;
     }
@@ -4862,6 +5111,7 @@ const EMPTY = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.create(null))
  * `encodeURIComponent`. Nullish values, ordinary objects, and literal or
  * percent-encoded `.`/`..` path segments are rejected with an SDK error.
  */
+// SAFETY: This branch compares prototype methods to recognize cross-realm plain values; it does not call the optional hasOwnProperty member.
 const createPathTagFunction = (pathEncoder = encodeURIPath) => function path(statics, ...params) {
     // If there are no params, no processing is needed.
     if (statics.length === 1) {
@@ -4880,6 +5130,7 @@ const createPathTagFunction = (pathEncoder = encodeURIPath) => function path(sta
             let encoded = (postPath ? encodeURIComponent : pathEncoder)('' + value);
             if (index !== params.length &&
                 (value == null ||
+                    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Path parameters may arrive from JavaScript callers and require runtime validation before URL encoding.
                     (typeof value === 'object' &&
                         // handle values from other realms
                         value.toString ===
@@ -4936,29 +5187,104 @@ const path = /* @__PURE__ */ createPathTagFunction(encodeURIPath);
 
 
 
+function resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Given a list of messages comprising a conversation, the model will return a response.
  */
 class Messages extends APIResource {
-    /**
-     * Get the messages in a stored chat completion. Only Chat Completions that have
-     * been created with the `store` parameter set to `true` will be returned.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const chatCompletionStoreMessage of client.chat.completions.messages.list(
-     *   'completion_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(completionID, query = {}, options) {
-        return this._client.getAPIList(path `/chat/completions/${completionID}/messages`, (CursorPage), { query, ...options, __security: { bearerAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/chat/completions/${completionID}/messages`, (CursorPage), resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=messages.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/chat-completions/streaming.mjs
+function normalizeChatCompletionChunk(chunk) {
+    if (!Array.isArray(chunk?.choices)) {
+        // SAFETY: This is an opaque provider record, with no choices to normalize.
+        // Preserve the existing SSE pass-through; the SDK does not validate these records.
+        return chunk;
+    }
+    return {
+        ...chunk,
+        choices: chunk.choices.map((choice) => ({ ...choice, finish_reason: choice.finish_reason ?? null })),
+    };
+}
+function normalizeChatCompletionStream(stream) {
+    const iterator = stream[Symbol.asyncIterator].bind(stream);
+    stream[Symbol.asyncIterator] = async function* normalizedChunks() {
+        const source = { [Symbol.asyncIterator]: iterator };
+        for await (const chunk of source) {
+            yield normalizeChatCompletionChunk(chunk);
+        }
+    };
+    // SAFETY: The installed iterator normalizes every wire chunk before exposing it.
+    return stream;
+}
+//# sourceMappingURL=streaming.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/error.mjs
 /** @deprecated Import from ./core/error instead */
 
@@ -4973,7 +5299,9 @@ function isChatCompletionFunctionTool(tool) {
 function makeParseableResponseFormat(response_format, parser) {
     const obj = { ...response_format, type: 'json_schema' };
     obj.json_schema = { ...obj.json_schema };
+    // SAFETY: The fresh copy may retain a caller-provided toJSON property; deleting it prevents serialization from replacing the validated schema.
     delete obj.toJSON;
+    // SAFETY: The fresh copy may retain a caller-provided toJSON property; deleting it prevents serialization from replacing the validated schema.
     delete obj.json_schema.toJSON;
     Object.defineProperties(obj, {
         $brand: {
@@ -4985,11 +5313,13 @@ function makeParseableResponseFormat(response_format, parser) {
             enumerable: false,
         },
     });
+    // SAFETY: Object.defineProperties installed the parser brand and callbacks required by the returned helper type.
     return obj;
 }
 /** Copies a Responses API text format and attaches a non-enumerable structured-output parser. */
 function makeParseableTextFormat(response_format, parser) {
     const obj = { ...response_format, type: 'json_schema' };
+    // SAFETY: The fresh copy may retain a caller-provided toJSON property; deleting it prevents serialization from replacing the validated schema.
     delete obj.toJSON;
     Object.defineProperties(obj, {
         $brand: {
@@ -5001,6 +5331,7 @@ function makeParseableTextFormat(response_format, parser) {
             enumerable: false,
         },
     });
+    // SAFETY: Object.defineProperties installed the parser brand and callbacks required by the returned helper type.
     return obj;
 }
 /**
@@ -5023,6 +5354,7 @@ function isAutoParsableResponseFormat(response_format) {
  * {@link ExtractParsedContentFromParams} cannot drift apart.
  */
 function isParseableResponseFormat(format) {
+    // SAFETY: Only the optional discriminator is read; arbitrary input is not treated as a validated response-format schema.
     return isAutoParsableResponseFormat(format) || format?.type === 'json_schema';
 }
 /**
@@ -5039,9 +5371,11 @@ function parseResponseFormatContent(format, content) {
         format !== null &&
         '$parseRaw' in format &&
         typeof format.$parseRaw === 'function') {
+        // SAFETY: The format's captured parser owns the ParsedT output contract; this function forwards its result without coercion.
         return format.$parseRaw(content);
     }
     try {
+        // SAFETY: ParsedT represents the caller's response schema; JSON syntax is checked here and schema validation remains with the configured format.
         return JSON.parse(content);
     }
     catch (error) {
@@ -5068,6 +5402,7 @@ function makeParseableTool(tool, { parser, callback }) {
             enumerable: false,
         },
     });
+    // SAFETY: Object.defineProperties installed the parser brand and callbacks required by the returned helper type.
     return obj;
 }
 /** Returns whether a Chat Completions tool carries the SDK's argument-parser marker. */
@@ -5142,10 +5477,13 @@ function parseToolCall(params, toolCall) {
         return toolCall;
     }
     if (toolCall.type !== 'function') {
+        // SAFETY: This branch handles unsupported JavaScript discriminators that the current TypeScript union excludes; the value is only used in the error.
         const unsupportedType = toolCall.type;
         throw new error_OpenAIError(`Currently only \`function\` and \`custom\` tool calls are supported; Received \`${unsupportedType}\``);
     }
+    // SAFETY: The find predicate checks the function-tool discriminator before matching its name; the cast retains that narrowing through find.
     const inputTool = params.tools?.find((inputTool) => isChatCompletionFunctionTool(inputTool) && inputTool.function?.name === toolCall.function.name); // TS doesn't narrow based on isChatCompletionTool
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The parser callback may return any value; null only represents an unparsed tool call.
     let parsedArguments = null;
     if (isAutoParsableTool(inputTool)) {
         parsedArguments = inputTool.$parseRaw(toolCall.function.arguments);
@@ -5202,6 +5540,7 @@ function validateInputTools(tools) {
             continue;
         }
         if (tool.type !== 'function') {
+            // SAFETY: This branch handles unsupported JavaScript discriminators that the current TypeScript union excludes; the value is only used in the error.
             const unsupportedType = tool.type;
             throw new error_OpenAIError(`Currently only \`function\` and \`custom\` tool types are supported; Received \`${unsupportedType}\``);
         }
@@ -5222,7 +5561,7 @@ function isPresent(obj) {
 }
 //# sourceMappingURL=chatCompletionUtils.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/lib/EventStream.mjs
-var _EventStream_instances, _EventStream_connectedPromise, _EventStream_resolveConnectedPromise, _EventStream_rejectConnectedPromise, _EventStream_endPromise, _EventStream_resolveEndPromise, _EventStream_rejectEndPromise, _EventStream_listeners, _EventStream_abortListeners, _EventStream_emittedListenerRegistrations, _EventStream_pendingListenerCleanup, _EventStream_pendingBufferedEventChecks, _EventStream_listenerDispatchDepth, _EventStream_ended, _EventStream_errored, _EventStream_aborted, _EventStream_catchingPromiseCreated, _EventStream_terminalFailure, _EventStream_removeAbortListeners, _EventStream_onceForEmitted, _EventStream_removeEmittedListener, _EventStream_cleanupEmittedListeners, _EventStream_handleError, _EventStream_settleTerminalEvent;
+var _EventStream_instances, _EventStream_connectedPromise, _EventStream_resolveConnectedPromise, _EventStream_rejectConnectedPromise, _EventStream_endPromise, _EventStream_resolveEndPromise, _EventStream_rejectEndPromise, _EventStream_listeners, _EventStream_abortListeners, _EventStream_emittedListenerRegistrations, _EventStream_pendingListenerCleanup, _EventStream_pendingBufferedEventChecks, _EventStream_listenerDispatchDepth, _EventStream_ended, _EventStream_errored, _EventStream_aborted, _EventStream_catchingPromiseCreated, _EventStream_terminalFailure, _EventStream_abortFromSignal, _EventStream_removeAbortListeners, _EventStream_onceForEmitted, _EventStream_removeEmittedListener, _EventStream_cleanupEmittedListeners, _EventStream_handleError, _EventStream_settleTerminalEvent;
 
 
 const MAX_BUFFERED_ITERATOR_EVENTS = 4096;
@@ -5234,7 +5573,9 @@ const MAX_BUFFERED_EVENT_DEPTH = 256;
 const bufferedJSONStringify = JSON.stringify;
 const bufferedJSONParse = JSON.parse;
 const sdkOwnedBufferedEventArguments = new WeakSet();
+// SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
 const typedArrayBufferGetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer')?.get;
+// SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
 const typedArrayLengthGetter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'length')?.get;
 const dataViewBufferGetter = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
 const symbolDescriptionGetter = Object.getOwnPropertyDescriptor(Symbol.prototype, 'description')?.get;
@@ -5248,6 +5589,8 @@ const errorStackDescriptor = Object.getOwnPropertyDescriptor(new Error('native s
 const functionToString = Function.prototype.toString;
 const objectToString = Object.prototype.toString;
 const errorBrandDescriptor = Object.getOwnPropertyDescriptor(Error, 'isError');
+// The native Error.isError predicate brands arbitrary values before an Error contract can be assumed.
+// SAFETY: The captured native Error.isError property was checked to be a function before it is used as a brand predicate.
 const nativeErrorBrand = errorBrandDescriptor && 'value' in errorBrandDescriptor && typeof errorBrandDescriptor.value === 'function'
     ? errorBrandDescriptor.value
     : undefined;
@@ -5277,6 +5620,7 @@ const trustedIntrinsicPrototypes = new Set([
 const trustedNativeConstructorSources = new Set();
 const canonicalIntrinsicDescriptors = new Map();
 const foreignErrorStackDescriptors = new WeakMap();
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The native proxy predicate accepts arbitrary object identities without invoking their handlers.
 function captureNativeProxyDetector() {
     if (typeof process === 'undefined') {
         return undefined;
@@ -5286,6 +5630,7 @@ function captureNativeProxyDetector() {
         if (!loader || !('value' in loader) || typeof loader.value !== 'function') {
             return undefined;
         }
+        // oxlint-disable-next-line anti-slop/no-reflect-apply -- Invoke the descriptor value without reading a potentially overridden call property.
         const util = Reflect.apply(loader.value, process, ['node:util']);
         if (typeof util !== 'object' || util === null) {
             return undefined;
@@ -5298,6 +5643,8 @@ function captureNativeProxyDetector() {
         if (!detector || !('value' in detector) || typeof detector.value !== 'function') {
             return undefined;
         }
+        // SAFETY: The native detector data property was checked to be callable; it is invoked only to test the corresponding intrinsic object brand.
+        // oxlint-disable-next-line anti-slop/no-object-parameters -- The captured native predicate is called only for objects, before their properties are inspected.
         return detector.value;
     }
     catch {
@@ -5317,6 +5664,7 @@ function rememberTrustedIntrinsic(constructor) {
         (typeof prototypeDescriptor.value !== 'object' && typeof prototypeDescriptor.value !== 'function')) {
         return;
     }
+    // SAFETY: The prototype data descriptor was checked as a non-null object before adding its identity to the trusted-intrinsic set.
     trustedIntrinsicPrototypes.add(prototypeDescriptor.value);
     const source = functionToString.call(constructor);
     if (/^function [A-Za-z_$][\w$]*\(\) \{ \[native code\] \}$/u.test(source) &&
@@ -5376,6 +5724,7 @@ for (const name of [
         rememberTrustedIntrinsic(descriptor.value);
     }
 }
+// SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
 const typedArrayConstructorDescriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'constructor');
 if (typedArrayConstructorDescriptor && 'value' in typedArrayConstructorDescriptor) {
     rememberTrustedIntrinsic(typedArrayConstructorDescriptor.value);
@@ -5392,6 +5741,7 @@ const blobInternalHandlePrototype = (() => {
         for (const key of Object.getOwnPropertySymbols(blob)) {
             const descriptor = Object.getOwnPropertyDescriptor(blob, key);
             if (descriptor && 'value' in descriptor && typeof descriptor.value === 'object' && descriptor.value) {
+                // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
                 return Object.getPrototypeOf(descriptor.value);
             }
         }
@@ -5404,6 +5754,7 @@ const blobInternalHandlePrototype = (() => {
 const mapEntries = Map.prototype.entries;
 const setValues = Set.prototype.values;
 const headersEntriesDescriptor = typeof Headers === 'function' ? Object.getOwnPropertyDescriptor(Headers.prototype, 'entries') : undefined;
+// SAFETY: The own Headers entries data property was checked to be callable and retains the native method signature.
 const headersEntries = headersEntriesDescriptor &&
     'value' in headersEntriesDescriptor &&
     typeof headersEntriesDescriptor.value === 'function'
@@ -5419,11 +5770,13 @@ const retainedStorageBrands = new Set([
     'Set',
     'Headers',
 ]);
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Foreign prototypes are untrusted objects until their constructor descriptors are verified.
 function getTrustedForeignIntrinsic(prototype) {
     const descriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
     if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'function') {
         return undefined;
     }
+    // SAFETY: The descriptor contains a function; the following native-source and prototype checks verify the Error constructor before use.
     const constructor = descriptor.value;
     const source = functionToString.call(constructor);
     const descriptors = canonicalIntrinsicDescriptors.get(source);
@@ -5438,12 +5791,16 @@ function getTrustedForeignIntrinsic(prototype) {
         constructorPrototype.writable !== false) {
         return undefined;
     }
+    // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
     return { constructor, descriptors, functionPrototype: Object.getPrototypeOf(constructor) };
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Intrinsic trust is established by object identity or verified cross-realm descriptors.
 function isTrustedIntrinsicPrototype(prototype) {
     return trustedIntrinsicPrototypes.has(prototype) || getTrustedForeignIntrinsic(prototype) !== undefined;
 }
-function isCanonicalIntrinsicFunction(value, canonical, functionPrototype) {
+function isCanonicalIntrinsicFunction(value, canonical, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Cross-realm function prototypes are compared by identity without trusting a callable signature.
+functionPrototype) {
     if (canonical === undefined) {
         return value === undefined;
     }
@@ -5454,6 +5811,7 @@ function isCanonicalIntrinsicFunction(value, canonical, functionPrototype) {
     if (functionToString.call(value) !== source) {
         return false;
     }
+    // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
     const actualFunctionPrototype = Object.getPrototypeOf(value);
     if (actualFunctionPrototype === functionPrototype) {
         return true;
@@ -5465,7 +5823,9 @@ function isCanonicalIntrinsicFunction(value, canonical, functionPrototype) {
     return (intrinsic !== undefined &&
         functionToString.call(intrinsic.constructor) === nativeFunctionConstructorSource);
 }
-function isCanonicalIntrinsicDescriptor(descriptor, canonical, functionPrototype) {
+function isCanonicalIntrinsicDescriptor(descriptor, canonical, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Descriptor validation compares the verified function-prototype identity without reading its fields.
+functionPrototype) {
     if (!canonical ||
         descriptor.configurable !== canonical.configurable ||
         descriptor.enumerable !== canonical.enumerable ||
@@ -5487,6 +5847,7 @@ function isCanonicalIntrinsicDescriptor(descriptor, canonical, functionPrototype
     return (isCanonicalIntrinsicFunction(descriptor.get, canonical.get, functionPrototype) &&
         isCanonicalIntrinsicFunction(descriptor.set, canonical.set, functionPrototype));
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Native error branding must inspect arbitrary objects before assuming an Error contract.
 function hasNativeErrorBrand(current) {
     if (nativeErrorBrand) {
         return nativeErrorBrand.call(Error, current);
@@ -5496,21 +5857,27 @@ function hasNativeErrorBrand(current) {
         if (Object.getOwnPropertyDescriptor(prototype, Symbol.toStringTag)) {
             return false;
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
         prototype = Object.getPrototypeOf(prototype);
     }
     return prototype === null && objectToString.call(current) === '[object Error]';
 }
-function getVerifiedForeignErrorConstructor(current, stackDescriptor) {
+function getVerifiedForeignErrorConstructor(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Foreign error constructors are verified from descriptors of an otherwise untrusted object.
+current, stackDescriptor) {
     if (typeof stackDescriptor.get !== 'function' || typeof stackDescriptor.set !== 'function') {
         return undefined;
     }
+    // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
     let prototype = Object.getPrototypeOf(current);
     for (let depth = 0; prototype !== null && depth < MAX_BUFFERED_EVENT_DEPTH; depth += 1) {
         const descriptor = Object.getOwnPropertyDescriptor(prototype, 'constructor');
         if (descriptor && 'value' in descriptor && typeof descriptor.value === 'function') {
+            // SAFETY: The descriptor contains a function; the following intrinsic and constructor-prototype checks decide whether it is a trusted Error constructor.
             const constructor = descriptor.value;
             if (functionToString.call(constructor) === nativeErrorConstructorSource &&
                 isTrustedIntrinsicPrototype(prototype)) {
+                // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
                 const functionPrototype = Object.getPrototypeOf(constructor);
                 if (Object.getPrototypeOf(stackDescriptor.get) === functionPrototype &&
                     Object.getPrototypeOf(stackDescriptor.set) === functionPrototype) {
@@ -5519,10 +5886,12 @@ function getVerifiedForeignErrorConstructor(current, stackDescriptor) {
                 return undefined;
             }
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
         prototype = Object.getPrototypeOf(prototype);
     }
     return undefined;
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Stack accessors are trusted only after the object passes native error branding.
 function isTrustedNativeErrorStack(current, descriptor) {
     if (!hasNativeErrorBrand(current)) {
         return false;
@@ -5541,6 +5910,7 @@ function isTrustedNativeErrorStack(current, descriptor) {
     }
     let canonicalDescriptor = foreignErrorStackDescriptors.get(verified.prototype);
     if (!canonicalDescriptor) {
+        // SAFETY: Reflect.construct returns an untyped value; unknown preserves that uncertainty for the descriptor checks below.
         const canonical = Reflect.construct(verified.constructor, []);
         if (typeof canonical !== 'object' ||
             canonical === null ||
@@ -5592,7 +5962,9 @@ function createEventQueue() {
         },
     };
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Retained storage branding walks arbitrary object prototypes without assuming their native type.
 function getRetainedStorageBrand(current) {
+    // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
     let prototype = Object.getPrototypeOf(current);
     for (let depth = 0; prototype !== null && depth < MAX_BUFFERED_EVENT_DEPTH; depth += 1) {
         if (prototype === Date.prototype) {
@@ -5615,19 +5987,24 @@ function getRetainedStorageBrand(current) {
             retainedStorageBrands.has(descriptor.value)) {
             return descriptor.value;
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
         prototype = Object.getPrototypeOf(prototype);
     }
     return undefined;
 }
-function estimateRetainedBufferBytes(current, visit, depth) {
+function estimateRetainedBufferBytes(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Memory accounting inspects arbitrary retained objects and detects native backing storage at runtime.
+current, visit, depth) {
     if (ArrayBuffer.isView(current)) {
         let buffer;
         let kind = 'typed-array';
         try {
+            // SAFETY: The captured intrinsic getter performs its own receiver brand check; its result stays unknown until the ArrayBuffer validation below.
             buffer = typedArrayBufferGetter?.call(current);
         }
         catch {
             kind = 'data-view';
+            // SAFETY: The DataView intrinsic getter performs its receiver brand check; its result stays unknown until the ArrayBuffer validation below.
             buffer = dataViewBufferGetter?.call(current);
         }
         if (typeof buffer !== 'object' || buffer === null) {
@@ -5641,6 +6018,7 @@ function estimateRetainedBufferBytes(current, visit, depth) {
     if (!brand) {
         return undefined;
     }
+    // oxlint-disable-next-line anti-slop/no-unknown-returns -- Captured native accessors are checked for a finite numeric result before retained-size accounting.
     let getter;
     const kind = 'buffer';
     switch (brand) {
@@ -5663,6 +6041,7 @@ function estimateRetainedBufferBytes(current, visit, depth) {
             return { bytes: 0, kind: 'map' };
         }
         case 'Date': {
+            // oxlint-disable-next-line anti-slop/no-reflect-apply -- Invoke the captured intrinsic without reading its mutable call property.
             Reflect.apply(dateTimestampGetter, current, []);
             return { bytes: 8, kind: 'date' };
         }
@@ -5684,7 +6063,9 @@ function estimateRetainedBufferBytes(current, visit, depth) {
         kind,
     };
 }
-function visitHiddenEventValues(current, kind, visit) {
+function visitHiddenEventValues(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Native collection contents are inspected only after storage branding, without trusting structural fields.
+current, kind, visit) {
     if (kind === 'map') {
         for (const [key, entry] of mapEntries.call(current)) {
             if (!visit(key, 8) || !visit(entry, 8)) {
@@ -5703,6 +6084,7 @@ function visitHiddenEventValues(current, kind, visit) {
         if (!headersEntries) {
             return false;
         }
+        // SAFETY: The captured native Headers.entries method performs its receiver brand check inside the enclosing try/catch.
         for (const [name, value] of headersEntries.call(current)) {
             if (!visit(name, 8) || !visit(value, 8)) {
                 return false;
@@ -5711,7 +6093,9 @@ function visitHiddenEventValues(current, kind, visit) {
     }
     return true;
 }
-function getInspectableEventKeys(current, kind, availableBytes) {
+function getInspectableEventKeys(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Event key inspection must accept arbitrary retained objects, arrays, and native storage views.
+current, kind, availableBytes) {
     if (Array.isArray(current)) {
         const descriptor = Object.getOwnPropertyDescriptor(current, 'length');
         const length = descriptor && 'value' in descriptor ? descriptor.value : undefined;
@@ -5740,7 +6124,9 @@ function getInspectableEventKeys(current, kind, availableBytes) {
         return !Number.isInteger(index) || index < 0 || index >= length || String(index) !== key;
     });
 }
-function visitInspectableEventProperties(current, kind, depth, availableBytes, charge, visit) {
+function visitInspectableEventProperties(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Retained event properties are inspected through descriptors on arbitrary object identities.
+current, kind, depth, availableBytes, charge, visit) {
     const keys = getInspectableEventKeys(current, kind, availableBytes());
     if (keys === undefined) {
         return false;
@@ -5766,7 +6152,12 @@ function visitInspectableEventProperties(current, kind, depth, availableBytes, c
     }
     return true;
 }
-function visitRetainedEventPrototypes(current, depth, isBlobInternalHandle, visited, availableBytes, charge, visit, retainPrototype) {
+function visitRetainedEventPrototypes(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Retention accounting follows arbitrary object prototypes without assuming their properties.
+current, depth, isBlobInternalHandle, visited, availableBytes, charge, visit, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The retention callback records prototype identity before inspecting its descriptors.
+retainPrototype) {
+    // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
     let prototype = Object.getPrototypeOf(current);
     for (let prototypeDepth = depth + 1; prototype !== null; prototypeDepth += 1) {
         if (prototypeDepth >= MAX_BUFFERED_EVENT_DEPTH) {
@@ -5811,6 +6202,7 @@ function visitRetainedEventPrototypes(current, depth, isBlobInternalHandle, visi
         if (!retained) {
             return false;
         }
+        // SAFETY: Object.getPrototypeOf returns an object or null; this native-prototype inspection does not assume an application-specific instance type.
         prototype = Object.getPrototypeOf(retainedPrototype);
     }
     return true;
@@ -5843,6 +6235,7 @@ function inspectBufferedEventGraph(value, remainingBytes) {
         }
         return bytes <= remainingBytes;
     };
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- The ledger records object and symbol identities, which have no shared structural contract.
     const addIdentity = (identity) => {
         if (activeNode) {
             activeNode.edges.add(identity);
@@ -5851,6 +6244,7 @@ function inspectBufferedEventGraph(value, remainingBytes) {
             roots.add(identity);
         }
     };
+    // oxlint-disable-next-line anti-slop/no-object-parameters -- Retained graph nodes are identified by object or symbol identity independently of their fields.
     const retainIdentity = (identity, inspect) => {
         addIdentity(identity);
         const node = { bytes: 0, edges: new Set() };
@@ -5875,6 +6269,8 @@ function inspectBufferedEventGraph(value, remainingBytes) {
             if (!symbolDescriptionGetter) {
                 return false;
             }
+            // SAFETY: The captured Symbol description getter is called after the symbol branch and returns a string or undefined by its native contract.
+            // oxlint-disable-next-line anti-slop/no-reflect-apply -- Invoke the captured intrinsic without reading its mutable call property.
             const description = Reflect.apply(symbolDescriptionGetter, current, []);
             return charge(8 + (description?.length ?? 0) * 2);
         })) {
@@ -5991,7 +6387,9 @@ function collectBufferedLedgerIdentities(roots, candidate, records, work) {
     }
     return identities;
 }
-function getBufferedLedgerChange(identity, graph, records, changes, node) {
+function getBufferedLedgerChange(
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Ledger changes are keyed by object or symbol identity, not a structural event type.
+identity, graph, records, changes, node) {
     const existing = changes.get(identity);
     if (existing) {
         if (node) {
@@ -6176,6 +6574,7 @@ function createBufferedEventLedger() {
         }
         entry.identities.clear();
     };
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The ledger contract contextually types its callbacks and keeps retained-identity internals private.
     return {
         retain(graph) {
             const entry = { scalarBytes: 0, roots: new Set(), identities: new Set() };
@@ -6287,18 +6686,28 @@ class EventStream {
     abort() {
         this.controller.abort();
     }
+    /** Creates a user-abort error retaining this runner's cancellation reason. */
+    _userAbortError() {
+        const error = new APIUserAbortError();
+        Object.defineProperty(error, 'cause', {
+            value: this.controller.signal.reason,
+            writable: true,
+            configurable: true,
+        });
+        return error;
+    }
     _listenForAbort(signal) {
         if (!signal || this.ended) {
             return;
         }
         if (signal.aborted) {
-            this.controller.abort();
+            __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_abortFromSignal).call(this, signal);
             return;
         }
         if (__classPrivateFieldGet(this, _EventStream_abortListeners, "f").some((registration) => registration.signal === signal)) {
             return;
         }
-        const listener = () => this.controller.abort();
+        const listener = () => __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_abortFromSignal).call(this, signal);
         signal.addEventListener('abort', listener, { once: true });
         __classPrivateFieldGet(this, _EventStream_abortListeners, "f").push({ signal, listener });
     }
@@ -6327,10 +6736,12 @@ class EventStream {
         if (!listeners) {
             return this;
         }
+        // SAFETY: Listener functions are object identities used as WeakMap keys; registration and removal use the same function instance.
         const emittedRegistration = __classPrivateFieldGet(this, _EventStream_emittedListenerRegistrations, "f").get(listener);
         if (emittedRegistration?.event === event &&
             !emittedRegistration.registration.removed &&
             !emittedRegistration.registration.detached) {
+            // SAFETY: The stored registration event was compared with this event above, preserving the event/listener type correlation.
             __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_removeEmittedListener).call(this, event, emittedRegistration.registration);
             return this;
         }
@@ -6368,6 +6779,7 @@ class EventStream {
         return new Promise((resolve, reject) => {
             __classPrivateFieldSet(this, _EventStream_catchingPromiseCreated, true, "f");
             const onError = (error) => {
+                // SAFETY: This callback is paired with the same event when registered and removed; its variadic body forwards the event tuple or captured error.
                 this.off(event, onEvent);
                 reject(error);
             };
@@ -6375,11 +6787,14 @@ class EventStream {
                 if (event !== 'error') {
                     this.off('error', onError);
                 }
+                // SAFETY: The emitted API returns the sole argument or the full tuple according to its existing EventTypes-dependent result contract.
                 resolve((values.length > 1 ? values : values[0]));
             };
             if (event !== 'error') {
+                // SAFETY: This callback is paired with the same event when registered and removed; its variadic body forwards the event tuple or captured error.
                 __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_onceForEmitted).call(this, 'error', onError);
             }
+            // SAFETY: This callback is paired with the same event when registered and removed; its variadic body forwards the event tuple or captured error.
             __classPrivateFieldGet(this, _EventStream_instances, "m", _EventStream_onceForEmitted).call(this, event, onEvent);
         });
     }
@@ -6406,7 +6821,9 @@ class EventStream {
                     sdkOwnedBufferedEventArguments.delete(args);
                 }
             };
+            // SAFETY: This callback is paired with the same event when registered and removed; its variadic body forwards the event tuple or captured error.
             this.on(event, onEvent);
+            // SAFETY: This callback is paired with the same event when registered and removed; its variadic body forwards the event tuple or captured error.
             return () => this.off(event, onEvent);
         }, {
             // When iterating the 'error' or 'abort' event itself, yield it as a
@@ -6437,6 +6854,7 @@ class EventStream {
         let failure;
         let failureDelivered = false;
         let detach = () => undefined;
+        // SAFETY: A completed iterator result has no yielded value; never preserves the iterator public result type for done: true.
         const doneResult = () => ({ value: undefined, done: true });
         const finishReaders = () => {
             while (readQueue.length) {
@@ -6513,10 +6931,12 @@ class EventStream {
                     return;
                 }
                 if (typeof value === 'object' && value !== null && sdkOwnedBufferedEventArguments.has(value)) {
+                    // SAFETY: Only SDK-created argument tuples are inserted into this private WeakSet, so membership establishes the array identity.
                     const argumentsTuple = value;
                     for (let index = 0; index < argumentsTuple.length; index += 1) {
                         const argument = argumentsTuple[index];
                         if (typeof argument === 'string') {
+                            // SAFETY: The branch checked argument is a string; JSON stringify/parse returns that same string value while detaching retained storage.
                             argumentsTuple[index] = bufferedJSONParse(bufferedJSONStringify(argument));
                         }
                     }
@@ -6653,6 +7073,7 @@ class EventStream {
         let dispatchThrew = false;
         try {
             if (listeners) {
+                // SAFETY: Filtering only removes registrations from the same event bucket and preserves the listener signatures for that event.
                 __classPrivateFieldGet(this, _EventStream_listeners, "f")[event] = listeners.filter((listener) => {
                     if (listener.once) {
                         listener.detached = true;
@@ -6661,9 +7082,11 @@ class EventStream {
                 });
                 __classPrivateFieldSet(this, _EventStream_listenerDispatchDepth, __classPrivateFieldGet(this, _EventStream_listenerDispatchDepth, "f") + 1, "f");
                 try {
+                    // SAFETY: The listener bucket and argument tuple come from the same EventTypes key; this bridges TypeScript generic indexed-access correlation.
                     for (const registration of listeners) {
                         if (!registration.removed) {
                             const { listener } = registration;
+                            // SAFETY: The listener bucket and argument tuple come from the same EventTypes key; this bridges TypeScript generic indexed-access correlation.
                             listener(...args);
                         }
                     }
@@ -6704,7 +7127,14 @@ class EventStream {
         // Hook for subclasses.
     }
 }
-_EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedPromise = new WeakMap(), _EventStream_rejectConnectedPromise = new WeakMap(), _EventStream_endPromise = new WeakMap(), _EventStream_resolveEndPromise = new WeakMap(), _EventStream_rejectEndPromise = new WeakMap(), _EventStream_listeners = new WeakMap(), _EventStream_abortListeners = new WeakMap(), _EventStream_emittedListenerRegistrations = new WeakMap(), _EventStream_pendingListenerCleanup = new WeakMap(), _EventStream_pendingBufferedEventChecks = new WeakMap(), _EventStream_listenerDispatchDepth = new WeakMap(), _EventStream_ended = new WeakMap(), _EventStream_errored = new WeakMap(), _EventStream_aborted = new WeakMap(), _EventStream_catchingPromiseCreated = new WeakMap(), _EventStream_terminalFailure = new WeakMap(), _EventStream_instances = new WeakSet(), _EventStream_removeAbortListeners = function _EventStream_removeAbortListeners() {
+_EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedPromise = new WeakMap(), _EventStream_rejectConnectedPromise = new WeakMap(), _EventStream_endPromise = new WeakMap(), _EventStream_resolveEndPromise = new WeakMap(), _EventStream_rejectEndPromise = new WeakMap(), _EventStream_listeners = new WeakMap(), _EventStream_abortListeners = new WeakMap(), _EventStream_emittedListenerRegistrations = new WeakMap(), _EventStream_pendingListenerCleanup = new WeakMap(), _EventStream_pendingBufferedEventChecks = new WeakMap(), _EventStream_listenerDispatchDepth = new WeakMap(), _EventStream_ended = new WeakMap(), _EventStream_errored = new WeakMap(), _EventStream_aborted = new WeakMap(), _EventStream_catchingPromiseCreated = new WeakMap(), _EventStream_terminalFailure = new WeakMap(), _EventStream_instances = new WeakSet(), _EventStream_abortFromSignal = function _EventStream_abortFromSignal(signal) {
+    try {
+        this.controller.abort(signal.reason);
+    }
+    catch {
+        this.controller.abort();
+    }
+}, _EventStream_removeAbortListeners = function _EventStream_removeAbortListeners() {
     for (const { signal, listener } of __classPrivateFieldGet(this, _EventStream_abortListeners, "f").splice(0)) {
         signal.removeEventListener('abort', listener);
     }
@@ -6718,6 +7148,7 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
         listeners?.length === previousLength + 1 &&
         registration?.listener === listener &&
         registration.once) {
+        // SAFETY: Listener functions are object identities used as WeakMap keys; registration and removal use the same function instance.
         __classPrivateFieldGet(this, _EventStream_emittedListenerRegistrations, "f").set(listener, { event, registration });
     }
 }, _EventStream_removeEmittedListener = function _EventStream_removeEmittedListener(event, registration) {
@@ -6725,6 +7156,7 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
         return;
     }
     registration.removed = true;
+    // SAFETY: Listener functions are object identities used as WeakMap keys; registration and removal use the same function instance.
     __classPrivateFieldGet(this, _EventStream_emittedListenerRegistrations, "f").delete(registration.listener);
     __classPrivateFieldGet(this, _EventStream_pendingListenerCleanup, "f").add(event);
     if (__classPrivateFieldGet(this, _EventStream_listenerDispatchDepth, "f") === 0) {
@@ -6732,9 +7164,11 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
     }
 }, _EventStream_cleanupEmittedListeners = function _EventStream_cleanupEmittedListeners() {
     for (const event of __classPrivateFieldGet(this, _EventStream_pendingListenerCleanup, "f")) {
+        // SAFETY: Pending cleanup keys are added only from registered EventTypes events; the key retains its event-map membership.
         const eventType = event;
         const listeners = __classPrivateFieldGet(this, _EventStream_listeners, "f")[eventType];
         if (listeners) {
+            // SAFETY: Filtering only removes registrations from the same event bucket and preserves the listener signatures for that event.
             __classPrivateFieldGet(this, _EventStream_listeners, "f")[eventType] = listeners.filter((listener) => !listener.removed);
         }
     }
@@ -6742,7 +7176,7 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
 }, _EventStream_handleError = function _EventStream_handleError(error) {
     __classPrivateFieldSet(this, _EventStream_errored, true, "f");
     if (error instanceof Error && error.name === 'AbortError') {
-        error = new APIUserAbortError();
+        error = this._userAbortError();
     }
     if (error instanceof APIUserAbortError) {
         __classPrivateFieldSet(this, _EventStream_aborted, true, "f");
@@ -6760,6 +7194,7 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
     return this._emit('error', new error_OpenAIError(String(error)));
 }, _EventStream_settleTerminalEvent = function _EventStream_settleTerminalEvent(event, args, hasListeners) {
     if (event === 'abort') {
+        // SAFETY: The abort event key selects the APIUserAbortError argument tuple established by the typed emit contract.
         const error = args[0];
         __classPrivateFieldSet(this, _EventStream_terminalFailure, __classPrivateFieldGet(this, _EventStream_terminalFailure, "f") ?? { kind: 'abort', error }, "f");
         if (!__classPrivateFieldGet(this, _EventStream_catchingPromiseCreated, "f") && !hasListeners) {
@@ -6772,6 +7207,7 @@ _EventStream_connectedPromise = new WeakMap(), _EventStream_resolveConnectedProm
     }
     if (event === 'error') {
         // NOTE: _emit('error', error) should only be called from #handleError().
+        // SAFETY: The error event is emitted by the error-normalization path, which supplies an OpenAIError as its first argument.
         const error = args[0];
         __classPrivateFieldSet(this, _EventStream_terminalFailure, __classPrivateFieldGet(this, _EventStream_terminalFailure, "f") ?? { kind: 'error', error }, "f");
         if (!__classPrivateFieldGet(this, _EventStream_catchingPromiseCreated, "f") && !hasListeners) {
@@ -6809,6 +7245,7 @@ class ParsingToolFunction {
 //# sourceMappingURL=RunnableFunction.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/lib/AbstractChatCompletionRunner.mjs
 var _AbstractChatCompletionRunner_instances, AbstractChatCompletionRunner_a, _AbstractChatCompletionRunner_completionArrivedBeforeAbort, _AbstractChatCompletionRunner_afterCompletionInvoked, _AbstractChatCompletionRunner_getFinalContent, _AbstractChatCompletionRunner_getFinalMessage, _AbstractChatCompletionRunner_getFinalFunctionToolCall, _AbstractChatCompletionRunner_getFinalFunctionToolCallResult, _AbstractChatCompletionRunner_calculateTotalUsage, _AbstractChatCompletionRunner_throwIfAborted, _AbstractChatCompletionRunner_validateParams, _AbstractChatCompletionRunner_stringifyFunctionCallResult;
+
 
 
 
@@ -6895,6 +7332,7 @@ class AbstractChatCompletionRunner extends EventStream {
         this._emit('chatCompletion', chatCompletion);
         const message = chatCompletion.choices[0]?.message;
         if (message) {
+            // SAFETY: An API assistant message is also accepted as a subsequent conversation message; this preserves that existing input/output bridge.
             this._addMessage(message);
         }
         return chatCompletion;
@@ -6908,6 +7346,7 @@ class AbstractChatCompletionRunner extends EventStream {
             this._emit('message', message);
             if (isToolMessage(message) && message.content) {
                 // Note, this assumes that {role: 'tool', content: …} is always the result of a call of tool of type=function.
+                // SAFETY: The legacy function-tool result event assumes textual tool output, as documented by the adjacent compatibility comment.
                 this._emit('functionToolCallResult', message.content);
             }
             else if (isAssistantMessage(message) && message.tool_calls) {
@@ -7013,8 +7452,11 @@ class AbstractChatCompletionRunner extends EventStream {
     async _runTools(client, params, runner, options) {
         const role = 'tool';
         const { tool_choice = 'auto', stream, toolContext: inputToolContext, ...restParams } = params;
+        // SAFETY: The generic runner parameters tie toolContext to ToolContext; undefined remains valid when the caller omits it under that contract.
         const toolContext = inputToolContext;
-        const singleFunctionToCall = typeof tool_choice !== 'string' && tool_choice.type === 'function' && tool_choice?.function?.name;
+        const singleFunctionToCall = 
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Chat history and tool-choice inputs can contain runtime variants that select different runner behavior.
+        typeof tool_choice !== 'string' && tool_choice.type === 'function' && tool_choice?.function?.name;
         const { maxChatCompletions = DEFAULT_MAX_CHAT_COMPLETIONS, afterCompletion } = options || {};
         const runAfterCompletion = async (completion) => {
             if (afterCompletion == null) {
@@ -7030,6 +7472,7 @@ class AbstractChatCompletionRunner extends EventStream {
                 if (!tool.$callback) {
                     throw new error_OpenAIError('Tool given to `.runTools()` that does not have an associated function');
                 }
+                // SAFETY: The auto-parseable tool supplies its own validated parameter schema and parser; this bridges the legacy runnable-tool parameter type.
                 return {
                     type: 'function',
                     function: {
@@ -7042,6 +7485,7 @@ class AbstractChatCompletionRunner extends EventStream {
                     },
                 };
             }
+            // SAFETY: Unbranded tools follow the existing runnable-tool contract; the function-tool branch below performs its normal dispatch.
             return tool;
         });
         const functionsByName = Object.create(null);
@@ -7050,18 +7494,23 @@ class AbstractChatCompletionRunner extends EventStream {
                 functionsByName[f.function.name || f.function.function.name] = f.function;
             }
         }
+        // SAFETY: The runnable function's parameter schema is forwarded as JSON keyword properties without changing or inspecting its values.
+        // SAFETY: This is the intentional non-function tool pass-through; the runnable and wire types differ in index signatures, not the forwarded value.
+        // SAFETY: Omitting the tools list preserves the optional wire field; the existing conditional result type is broader than the runnable helper's declaration.
         const tools = 'tools' in params
             ? inputTools.map((t) => t.type === 'function'
                 ? {
                     type: 'function',
                     function: {
                         name: t.function.name || t.function.function.name,
+                        // oxlint-disable-next-line anti-slop/no-unsafe-dictionary-type -- Tool parameter schemas use the published open JSON Schema dictionary contract, including arbitrary extensions.
                         parameters: t.function.parameters,
                         description: t.function.description,
                         strict: t.function.strict,
                     },
                 }
-                : t)
+                : // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- Preserve the existing non-function tool pass-through; runnable and wire schema interfaces have incompatible index signatures.
+                    t)
             : undefined;
         for (const message of params.messages) {
             this._addMessage(message, false, false);
@@ -7094,21 +7543,37 @@ class AbstractChatCompletionRunner extends EventStream {
                 }
                 catch (error) {
                     if (this.controller.signal.aborted) {
-                        throw new APIUserAbortError();
+                        throw this._userAbortError();
                     }
                     const content = error instanceof Error ? error.message : String(error);
                     return { message: { role, tool_call_id, content }, functionCalled: false };
                 }
                 if (this.controller.signal.aborted) {
-                    throw new APIUserAbortError();
+                    throw this._userAbortError();
                 }
-                rawContent = await fn.function(parsed, runner, toolContext);
+                try {
+                    rawContent = await fn.function(parsed, runner, toolContext);
+                }
+                catch (error) {
+                    if (this.controller.signal.aborted && Object.is(error, this.controller.signal.reason)) {
+                        throw this._userAbortError();
+                    }
+                    throw error;
+                }
             }
             else {
                 if (this.controller.signal.aborted && !bufferedToolCall) {
-                    throw new APIUserAbortError();
+                    throw this._userAbortError();
                 }
-                rawContent = await fn.function(args, runner, toolContext);
+                try {
+                    rawContent = await fn.function(args, runner, toolContext);
+                }
+                catch (error) {
+                    if (this.controller.signal.aborted && Object.is(error, this.controller.signal.reason)) {
+                        throw this._userAbortError();
+                    }
+                    throw error;
+                }
             }
             const content = __classPrivateFieldGet(AbstractChatCompletionRunner_a, AbstractChatCompletionRunner_a, "m", _AbstractChatCompletionRunner_stringifyFunctionCallResult).call(AbstractChatCompletionRunner_a, rawContent);
             return { message: { role, tool_call_id, content }, functionCalled: true };
@@ -7138,7 +7603,7 @@ class AbstractChatCompletionRunner extends EventStream {
                         this._addMessage(result.message);
                     }
                     if (this.controller.signal.aborted) {
-                        throw new APIUserAbortError();
+                        throw this._userAbortError();
                     }
                     if (singleFunctionToCall && result.functionCalled) {
                         await runAfterCompletion(chatCompletion);
@@ -7165,7 +7630,7 @@ class AbstractChatCompletionRunner extends EventStream {
                     }
                 }
                 if (this.controller.signal.aborted) {
-                    throw new APIUserAbortError();
+                    throw this._userAbortError();
                 }
             }
             await runAfterCompletion(chatCompletion);
@@ -7180,6 +7645,7 @@ AbstractChatCompletionRunner_a = AbstractChatCompletionRunner, _AbstractChatComp
         const message = this.messages[i];
         if (isAssistantMessage(message)) {
             // Audio is intentionally omitted from the final message snapshot.
+            // SAFETY: The assistant-message branch normalizes missing content and refusal to null when constructing the completed message.
             const ret = {
                 ...message,
                 content: message.content ?? null,
@@ -7207,6 +7673,7 @@ AbstractChatCompletionRunner_a = AbstractChatCompletionRunner, _AbstractChatComp
         const message = this.messages[i];
         if (isToolMessage(message) &&
             message.content != null &&
+            // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Chat history and tool-choice inputs can contain runtime variants that select different runner behavior.
             typeof message.content === 'string' &&
             this.messages.some((x) => x.role === 'assistant' &&
                 x.tool_calls?.some((y) => y.type === 'function' && y.id === message.tool_call_id))) {
@@ -7225,24 +7692,41 @@ AbstractChatCompletionRunner_a = AbstractChatCompletionRunner, _AbstractChatComp
             total.completion_tokens += usage.completion_tokens;
             total.prompt_tokens += usage.prompt_tokens;
             total.total_tokens += usage.total_tokens;
+            for (const key of ['completion_tokens_details', 'prompt_tokens_details']) {
+                const details = usage[key];
+                if (isObj(details)) {
+                    // SAFETY: Both token detail types contain only optional numeric counts.
+                    const totalDetails = (total[key] ?? (total[key] = {}));
+                    for (const name in details) {
+                        if (!hasOwn(details, name)) {
+                            continue;
+                        }
+                        const count = details[name];
+                        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- API-compatible endpoints can return nonnumeric detail values despite the declared response type.
+                        if (typeof count === 'number') {
+                            Object.defineProperty(totalDetails, name, {
+                                value: (hasOwn(totalDetails, name) ? (totalDetails[name] ?? 0) : 0) + count,
+                                enumerable: true,
+                                configurable: true,
+                                writable: true,
+                            });
+                        }
+                    }
+                }
+            }
         }
     }
     return total;
 }, _AbstractChatCompletionRunner_throwIfAborted = function _AbstractChatCompletionRunner_throwIfAborted() {
     if (this.controller.signal.aborted) {
-        const error = new APIUserAbortError();
-        Object.defineProperty(error, 'cause', {
-            value: this.controller.signal.reason,
-            writable: true,
-            configurable: true,
-        });
-        throw error;
+        throw this._userAbortError();
     }
 }, _AbstractChatCompletionRunner_validateParams = function _AbstractChatCompletionRunner_validateParams(params) {
     if (params.n != null && params.n > 1) {
         throw new error_OpenAIError('ChatCompletion convenience helpers only support n=1 at this time. To use n>1, please use chat.completions.create() directly.');
     }
 }, _AbstractChatCompletionRunner_stringifyFunctionCallResult = function _AbstractChatCompletionRunner_stringifyFunctionCallResult(rawContent) {
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Chat history and tool-choice inputs can contain runtime variants that select different runner behavior.
     if (typeof rawContent === 'string') {
         return rawContent;
     }
@@ -7274,6 +7758,7 @@ class ChatCompletionRunner extends AbstractChatCompletionRunner {
     _addMessage(message, emit = true, normalizeContent = true) {
         super._addMessage(message, emit, normalizeContent);
         if (emit && isAssistantMessage(message) && message.content) {
+            // SAFETY: The runner's content event preserves the existing string-content contract for assistant messages supplied by the API or caller.
             this._emit('content', message.content);
         }
     }
@@ -7543,7 +8028,7 @@ const partialParse = (input) => parseJSON(input, Allow.ALL ^ Allow.NUM);
 
 //# sourceMappingURL=streaming.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/lib/ChatCompletionStream.mjs
-var _ChatCompletionStream_instances, _ChatCompletionStream_params, _ChatCompletionStream_audioDoneChoiceIndexes, _ChatCompletionStream_choiceEventStates, _ChatCompletionStream_currentChatCompletionSnapshot, _ChatCompletionStream_hasAutoParseableTool, _ChatCompletionStream_partialJSONParseBudget, _ChatCompletionStream_beginRequest, _ChatCompletionStream_getChoiceEventState, _ChatCompletionStream_addChunk, _ChatCompletionStream_emitToolCallDoneEvent, _ChatCompletionStream_emitContentDoneEvents, _ChatCompletionStream_validateStructuredSnapshots, _ChatCompletionStream_endRequest, _ChatCompletionStream_accumulateChatCompletion;
+var _ChatCompletionStream_instances, _ChatCompletionStream_params, _ChatCompletionStream_rejectsUnfinishedTurns, _ChatCompletionStream_audioDoneChoiceIndexes, _ChatCompletionStream_choiceEventStates, _ChatCompletionStream_currentChatCompletionSnapshot, _ChatCompletionStream_hasAutoParseableTool, _ChatCompletionStream_partialJSONParseBudget, _ChatCompletionStream_beginRequest, _ChatCompletionStream_getChoiceEventState, _ChatCompletionStream_addChunk, _ChatCompletionStream_emitToolCallDoneEvent, _ChatCompletionStream_emitContentDoneEvents, _ChatCompletionStream_validateStructuredSnapshots, _ChatCompletionStream_endRequest, _ChatCompletionStream_accumulateChatCompletion;
 
 
 
@@ -7553,6 +8038,8 @@ var _ChatCompletionStream_instances, _ChatCompletionStream_params, _ChatCompleti
 
 
 
+
+// oxlint-disable-next-line anti-slop/no-unknown-returns -- Partial JSON may have any shape; callers validate or parse it against their response schema.
 function parseStructuredStreamingJSON(content) {
     try {
         return partialParse(content);
@@ -7572,6 +8059,7 @@ function makeChatCompletionReadableStreamMessageChunk(chunk, message, toolCallId
     const payload = {
         type: 'message',
         message,
+        // Spread creates an own data property without invoking inherited setters or changing the object prototype.
         ...(toolCallIds ? { tool_call_ids: toolCallIds } : {}),
     };
     return {
@@ -7592,6 +8080,7 @@ function getChatCompletionReadableStreamMessage(item) {
     if ('type' in item) {
         return item;
     }
+    // SAFETY: This decoder reads the SDK's tagged readable-stream envelope; JSON parsing restores its serialized message fields for the stream accumulator.
     return JSON.parse(item.object.slice(CHAT_COMPLETION_READABLE_STREAM_MESSAGE_PREFIX.length));
 }
 // The Chat Completions schema limits n to 128. Replayed streams do not retain
@@ -7719,11 +8208,13 @@ function reservePartialJSONParse(state, budget) {
 function captureStructuredJSONSnapshot(snapshot, property) {
     const descriptor = Object.getOwnPropertyDescriptor(snapshot, property);
     if (!descriptor) {
+        // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
         let prototype = Object.getPrototypeOf(snapshot);
         for (let depth = 0; prototype !== null; depth += 1) {
             if (depth >= MAX_PARTIAL_JSON_DEPTH || Object.getOwnPropertyDescriptor(prototype, property)) {
                 throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
             }
+            // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
             prototype = Object.getPrototypeOf(prototype);
         }
         return undefined;
@@ -7732,6 +8223,7 @@ function captureStructuredJSONSnapshot(snapshot, property) {
         (typeof descriptor.value !== 'string' && descriptor.value !== null && descriptor.value !== undefined)) {
         throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
     }
+    // SAFETY: The own data descriptor was explicitly checked to contain only a string, null, or undefined.
     return descriptor.value;
 }
 function captureStructuredMessageSnapshot(choice) {
@@ -7742,16 +8234,19 @@ function captureStructuredMessageSnapshot(choice) {
         descriptor.value === null) {
         throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
     }
+    // SAFETY: The choice contract supplies a message; the own data descriptor check prevents getters from changing which object is captured.
     return descriptor.value;
 }
 function captureSnapshotArray(snapshot, property, maximum, kind) {
     const descriptor = Object.getOwnPropertyDescriptor(snapshot, property);
     if (!descriptor) {
+        // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
         let prototype = Object.getPrototypeOf(snapshot);
         for (let depth = 0; prototype !== null; depth += 1) {
             if (depth >= MAX_PARTIAL_JSON_DEPTH || Object.getOwnPropertyDescriptor(prototype, property)) {
                 throw new error_OpenAIError(`Chat completion stream contains an unsafe snapshot ${kind} collection`);
             }
+            // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
             prototype = Object.getPrototypeOf(prototype);
         }
         return undefined;
@@ -7763,6 +8258,7 @@ function captureSnapshotArray(snapshot, property, maximum, kind) {
     if (!length || !('value' in length) || !Number.isSafeInteger(length.value) || length.value > maximum) {
         throw new error_OpenAIError(`Chat completion stream exceeded its snapshot ${kind} limit`);
     }
+    // SAFETY: The captured data property is an array with a checked bounded length; Item comes from the owning snapshot collection's contract.
     return descriptor.value;
 }
 function captureSnapshotArrayItem(array, index) {
@@ -7773,6 +8269,7 @@ function captureSnapshotArrayItem(array, index) {
     if (!('value' in descriptor)) {
         throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
     }
+    // SAFETY: The descriptor is a data property of the typed Item array, so its value retains that array's element contract.
     return descriptor.value;
 }
 function mapCapturedSnapshotArray(array, maximum, kind, map) {
@@ -7791,6 +8288,7 @@ function mapCapturedSnapshotArray(array, maximum, kind, map) {
         if (!('value' in item)) {
             throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
         }
+        // SAFETY: The descriptor is a data property of the typed Item array, so its value retains that array's element contract.
         mapped[index] = map(item.value, index);
     }
     return mapped;
@@ -7825,6 +8323,7 @@ function assertBoundToolCallIdentity(toolCall, identity) {
         throw new error_OpenAIError('Chat completion stream contains a changed tool call identity');
     }
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- This assignment primitive copies own properties from heterogeneous snapshot and delta objects.
 function assignOwnProperties(target, source) {
     if (Object.prototype.propertyIsEnumerable.call(source, '__proto__') && !hasOwn(target, '__proto__')) {
         Object.defineProperty(target, '__proto__', {
@@ -7844,12 +8343,14 @@ function cloneParserConfigObject(value, stableFields = []) {
             continue;
         }
         descriptors[field] = {
+            // oxlint-disable-next-line anti-slop/no-reflect-get -- Generic config cloning must resolve inherited/accessor keys outside the declared config shape.
             value: descriptor && 'value' in descriptor ? descriptor.value : Reflect.get(value, field, value),
             enumerable: descriptor?.enumerable ?? false,
             configurable: descriptor?.configurable ?? true,
             writable: descriptor && 'writable' in descriptor ? descriptor.writable : false,
         };
     }
+    // SAFETY: The clone preserves the original prototype and descriptors, replacing only the parser metadata captured from that same value.
     return Object.create(Object.getPrototypeOf(value), descriptors);
 }
 function snapshotChatCompletionParserParams(params) {
@@ -7867,6 +8368,7 @@ function snapshotChatCompletionParserParams(params) {
                 stableTools.length = index + 1;
                 continue;
             }
+            // SAFETY: This own data descriptor comes from the request's typed tools array; the following code captures its parser metadata.
             const tool = item.value;
             const stableTool = cloneParserConfigObject(tool, [
                 'type',
@@ -7885,6 +8387,7 @@ function snapshotChatCompletionParserParams(params) {
                     value: cloneParserConfigObject(stableTool.function, ['name', 'strict']),
                 };
             }
+            // SAFETY: The cloned tool retains the original prototype and descriptors while substituting its captured parser configuration.
             stableTools[index] = Object.create(Object.getPrototypeOf(tool), descriptors);
         }
         snapshot.tools = stableTools;
@@ -7915,6 +8418,7 @@ function canonicalSerializedParserSchema(value, budget) {
         budget.bytes += bytes;
         return true;
     };
+    // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
     const visit = (current, depth) => {
         if (depth > MAX_SERIALIZED_PARSER_SCHEMA_DEPTH || budget.nodes >= MAX_SERIALIZED_PARSER_SCHEMA_NODES) {
             return UNSAFE_SERIALIZED_PARSER_VALUE;
@@ -7942,6 +8446,7 @@ function canonicalSerializedParserSchema(value, budget) {
             return UNSAFE_SERIALIZED_PARSER_VALUE;
         }
         const array = Array.isArray(current);
+        // SAFETY: Object.getPrototypeOf returns an object or null; the following traversal checks inherited properties without assuming a specific prototype type.
         const prototype = Object.getPrototypeOf(current);
         if ((array && prototype !== Array.prototype) ||
             (!array && prototype !== null && prototype !== Object.prototype)) {
@@ -8053,7 +8558,11 @@ function canonicalSerializedParserSchema(value, budget) {
         return undefined;
     }
 }
-function rememberSerializedParserSchema(signatures, source, holder, key) {
+function rememberSerializedParserSchema(signatures, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Parser owners are tracked by identity before their metadata descriptors are validated.
+source, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Serialized schema holders may be arbitrary objects with hostile accessors or prototypes.
+holder, key) {
     const parser = Object.getOwnPropertyDescriptor(source, '$parseRaw');
     const schema = Object.getOwnPropertyDescriptor(holder, key);
     if (!parser ||
@@ -8068,7 +8577,11 @@ function rememberSerializedParserSchema(signatures, source, holder, key) {
         signatures.set(source, normalized);
     }
 }
-function hasMatchingSerializedParserSchema(signatures, source, holder, key, value) {
+function hasMatchingSerializedParserSchema(signatures, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- Parser signatures belong to the original object identity, independent of its fields.
+source, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The schema holder is inspected through own descriptors before its contents are trusted.
+holder, key, value) {
     const expected = source && signatures.get(source);
     const descriptor = Object.getOwnPropertyDescriptor(holder, key);
     return (expected !== undefined &&
@@ -8099,6 +8612,7 @@ function shadowSerializedParserMetadata(descriptors, source, fields) {
     }
 }
 function snapshotSerializedParserTool(serialized) {
+    // SAFETY: The fallback is a serialization scaffold: the code below installs the captured wire fields before the tool is returned.
     const source = serialized.source ??
         {
             type: serialized.type,
@@ -8111,9 +8625,11 @@ function snapshotSerializedParserTool(serialized) {
             descriptors.function = serializedParserDescriptor(descriptors.function, undefined);
         }
         shadowSerializedParserMetadata(descriptors, source, ['$brand', '$parseRaw', '$callback']);
+        // SAFETY: The descriptors reconstruct the tool's captured serialized fields and shadow parser metadata while retaining its original prototype.
         return Object.create(Object.getPrototypeOf(source), descriptors);
     }
     const descriptor = descriptors.function;
+    // SAFETY: The preceding guard proves this data descriptor contains a non-null object; no more specific type is assumed.
     const original = descriptor && 'value' in descriptor && typeof descriptor.value === 'object' && descriptor.value !== null
         ? descriptor.value
         : {};
@@ -8124,17 +8640,21 @@ function snapshotSerializedParserTool(serialized) {
     if (!serialized.function.schemaMatches) {
         shadowSerializedParserMetadata(descriptors, source, ['$brand', '$parseRaw', '$callback']);
     }
+    // SAFETY: The descriptors reconstruct the tool's captured serialized fields and shadow parser metadata while retaining its original prototype.
     return Object.create(Object.getPrototypeOf(source), descriptors);
 }
 function snapshotSerializedResponseFormat(serialized) {
+    // SAFETY: The fallback seeds only the discriminator; the captured response-format fields are installed below before returning it.
     const source = serialized.source ?? { type: serialized.type };
     const descriptors = Object.getOwnPropertyDescriptors(source);
     descriptors.type = serializedParserDescriptor(descriptors.type, serialized.type);
     if (serialized.type !== 'json_schema' || !serialized.source || !serialized.schemaMatches) {
         shadowSerializedParserMetadata(descriptors, source, ['$brand', '$parseRaw']);
     }
+    // SAFETY: The descriptors restore the captured response-format fields and parser metadata on the original prototype.
     return Object.create(Object.getPrototypeOf(source), descriptors);
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The serialization visitor accepts arbitrary object and array holders, inspecting own descriptors only.
 function ownSerializedParserObject(holder, key) {
     const descriptor = Object.getOwnPropertyDescriptor(holder, key);
     if (!descriptor || !('value' in descriptor)) {
@@ -8200,6 +8720,8 @@ function observeSerializedChatCompletionParserParams(body, initial, update) {
                 if (Array.isArray(value)) {
                     tools = new Proxy(value, {
                         get(target, property) {
+                            // SAFETY: Proxy property values may be arbitrary; unknown preserves that uncertainty before the property-specific checks below.
+                            // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys with the original target as accessor receiver.
                             const actual = Reflect.get(target, property, target);
                             if (typeof property === 'string') {
                                 const index = Number(property);
@@ -8311,6 +8833,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         super();
         _ChatCompletionStream_instances.add(this);
         _ChatCompletionStream_params.set(this, void 0);
+        _ChatCompletionStream_rejectsUnfinishedTurns.set(this, false);
         _ChatCompletionStream_audioDoneChoiceIndexes.set(this, void 0);
         _ChatCompletionStream_choiceEventStates.set(this, void 0);
         _ChatCompletionStream_currentChatCompletionSnapshot.set(this, void 0);
@@ -8329,6 +8852,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 if (!descriptor || !('value' in descriptor)) {
                     continue;
                 }
+                // SAFETY: The descriptor is read from the typed request tools array and checked as an own data property before accessing the tool.
                 const tool = descriptor.value;
                 if (isChatCompletionFunctionTool(tool) &&
                     (isAutoParsableTool(tool) || tool.function.strict === true)) {
@@ -8357,9 +8881,15 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
     }
     /** Starts a streaming chat completion request and returns its event-driven helper. */
     static createChatCompletion(client, params, options) {
+        // SAFETY: The runner forces stream: true when sending this request; the same parameters retain the caller's parsing configuration.
         const runner = new ChatCompletionStream(params);
         runner._run(() => runner._runChatCompletion(client, { ...params, stream: true }, { ...options, __metadata: { ...options?.__metadata, helperMethod: 'stream' } }));
         return runner;
+    }
+    /** Rejects unfinished turns before tool callbacks while preserving ordinary stream and replay behavior. */
+    _runTools(client, params, runner, options) {
+        __classPrivateFieldSet(this, _ChatCompletionStream_rejectsUnfinishedTurns, true, "f");
+        return super._runTools(client, params, runner, options);
     }
     async _createChatCompletion(client, params, options) {
         this._listenForAbort(options?.signal);
@@ -8387,7 +8917,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             __classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_addChunk).call(this, chunk);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
     }
@@ -8417,7 +8947,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 this._addMessage(message.message);
                 continue;
             }
-            const chunk = item;
+            const chunk = normalizeChatCompletionChunk(item);
             if (chatId && chunk.id && chatId !== chunk.id) {
                 // A new request has been made.
                 this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
@@ -8428,7 +8958,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             }
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         if (__classPrivateFieldGet(this, _ChatCompletionStream_currentChatCompletionSnapshot, "f")) {
             return this._addChatCompletion(__classPrivateFieldGet(this, _ChatCompletionStream_instances, "m", _ChatCompletionStream_endRequest).call(this));
@@ -8440,7 +8970,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
         throw new error_OpenAIError(`request ended without sending any chunks`);
     }
     /** Iterates over raw API chunks; stopping iteration early aborts the underlying request. */
-    [(_ChatCompletionStream_params = new WeakMap(), _ChatCompletionStream_audioDoneChoiceIndexes = new WeakMap(), _ChatCompletionStream_choiceEventStates = new WeakMap(), _ChatCompletionStream_currentChatCompletionSnapshot = new WeakMap(), _ChatCompletionStream_hasAutoParseableTool = new WeakMap(), _ChatCompletionStream_partialJSONParseBudget = new WeakMap(), _ChatCompletionStream_instances = new WeakSet(), _ChatCompletionStream_beginRequest = function _ChatCompletionStream_beginRequest() {
+    [(_ChatCompletionStream_params = new WeakMap(), _ChatCompletionStream_rejectsUnfinishedTurns = new WeakMap(), _ChatCompletionStream_audioDoneChoiceIndexes = new WeakMap(), _ChatCompletionStream_choiceEventStates = new WeakMap(), _ChatCompletionStream_currentChatCompletionSnapshot = new WeakMap(), _ChatCompletionStream_hasAutoParseableTool = new WeakMap(), _ChatCompletionStream_partialJSONParseBudget = new WeakMap(), _ChatCompletionStream_instances = new WeakSet(), _ChatCompletionStream_beginRequest = function _ChatCompletionStream_beginRequest() {
         if (this.ended) {
             return;
         }
@@ -8584,7 +9114,9 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             throw new Error('tool call snapshot missing `type`');
         }
         if (toolCallSnapshot.type === 'function') {
+            // SAFETY: The find predicate verifies the function-tool discriminator before matching its name; the cast carries that refinement through find.
             const inputTool = __classPrivateFieldGet(this, _ChatCompletionStream_params, "f")?.tools?.find((tool) => isChatCompletionFunctionTool(tool) && tool.function.name === toolCallSnapshot.function.name); // TS doesn't narrow based on isChatCompletionTool
+            // oxlint-disable-next-line anti-slop/no-known-value-widening -- The initial null is replaced with an arbitrary tool-parser result after snapshot validation.
             let parsedArguments = null;
             const parseable = isAutoParsableTool(inputTool) || inputTool?.function.strict === true;
             let argumentsSnapshot;
@@ -8736,6 +9268,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 if (!descriptor || !('value' in descriptor)) {
                     throw new error_OpenAIError('Chat completion stream contains an unsafe structured JSON snapshot');
                 }
+                // SAFETY: The tool-call function is captured through an own data descriptor; its fields are subsequently checked by the structured snapshot reader.
                 const fn = descriptor.value;
                 const argumentsSnapshot = captureStructuredJSONSnapshot(fn, 'arguments');
                 if (typeof argumentsSnapshot !== 'string') {
@@ -8796,7 +9329,13 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             }
             let choice = snapshot.choices[index];
             if (!choice) {
-                const newChoice = { finish_reason, index, message: {}, logprobs: null, ...other };
+                const newChoice = {
+                    finish_reason: finish_reason ?? null,
+                    index,
+                    message: {},
+                    logprobs: null,
+                    ...other,
+                };
                 snapshot.choices[index] = newChoice;
                 choice = newChoice;
             }
@@ -8829,7 +9368,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
             }
             if (finish_reason) {
                 choice.finish_reason = finish_reason;
-                if (__classPrivateFieldGet(this, _ChatCompletionStream_params, "f") && hasAutoParseableInput(__classPrivateFieldGet(this, _ChatCompletionStream_params, "f"))) {
+                if (__classPrivateFieldGet(this, _ChatCompletionStream_params, "f") && (__classPrivateFieldGet(this, _ChatCompletionStream_rejectsUnfinishedTurns, "f") || hasAutoParseableInput(__classPrivateFieldGet(this, _ChatCompletionStream_params, "f")))) {
                     if (finish_reason === 'length') {
                         throw new LengthFinishReasonError();
                     }
@@ -8844,6 +9383,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 continue;
             } // Shouldn't happen; just in case.
             __classPrivateFieldGet(this, _ChatCompletionStream_audioDoneChoiceIndexes, "f").delete(index);
+            // SAFETY: Streaming audio fields arrive incrementally even though the generated delta type omits them; each present field is merged below.
             const { audio, content, refusal, function_call, role, ...capturedDeltaFields } = delta;
             const { tool_calls: capturedToolCallDelta, ...rest } = capturedDeltaFields;
             const tool_calls = hasOwn(capturedDeltaFields, 'tool_calls') ? capturedToolCallDelta : delta.tool_calls;
@@ -8923,6 +9463,7 @@ class ChatCompletionStream extends AbstractChatCompletionRunner {
                 // Tool calls are built up across chunks, so while the stream is in progress the
                 // entries are only partially filled in; they match `ChatCompletionSnapshot.Choice.Message.ToolCall`
                 // once every delta for them has been accumulated.
+                // SAFETY: This SDK-owned collection holds partial tool calls during accumulation; finalization checks required fields before exposing completed calls.
                 const toolCallSnapshots = ((_e = choice.message).tool_calls ?? (_e.tool_calls = []));
                 for (const toolCallDelta of tool_calls) {
                     const { index, id, type, function: fn, custom, ...rest } = toolCallDelta;
@@ -9048,6 +9589,7 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
             }
             const stableChoice = new Proxy(choice, {
                 get(target, property, receiver) {
+                    // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys and the original accessor receiver.
                     return property === 'message' ? validated.message : Reflect.get(target, property, receiver);
                 },
             });
@@ -9063,6 +9605,7 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
                     if (property === 'tool_calls') {
                         return validated.toolCallCollection;
                     }
+                    // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys and the original accessor receiver.
                     return Reflect.get(target, property, receiver);
                 },
             });
@@ -9073,7 +9616,9 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
             if (!finishReason) {
                 throw new error_OpenAIError(`missing finish_reason for choice ${index}`);
             }
+            // SAFETY: The completed API response contract supplies the audio fields; this preserves the existing pass-through behavior at finalization.
             const audioResponse = audio ? { audio: audio } : {};
+            // SAFETY: The API completion contract uses assistant role; retaining the wire role preserves existing behavior without adding runtime rejection.
             const role = message.role; // this is what we expect; in theory it could be different which would make our types a slight lie but would be fine.
             if (!role) {
                 throw new error_OpenAIError(`missing role for choice ${index}`);
@@ -9136,6 +9681,7 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
                                         if (property === 'name') {
                                             return captured.name;
                                         }
+                                        // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys and the original accessor receiver.
                                         return Reflect.get(target, property, receiver);
                                     },
                                 });
@@ -9148,6 +9694,7 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
                                         if (property === 'function') {
                                             return stableFunction;
                                         }
+                                        // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys and the original accessor receiver.
                                         return Reflect.get(target, property, receiver);
                                     },
                                 })
@@ -9197,6 +9744,7 @@ function finalizeChatCompletion(snapshot, params, audioDoneChoiceIndexes, valida
         created,
         model,
         object: 'chat.completion',
+        // Spread creates an own data property without invoking inherited setters or changing the object prototype.
         ...(system_fingerprint ? { system_fingerprint } : {}),
     };
     return maybeParseChatCompletion(completion, params);
@@ -9286,6 +9834,62 @@ class ChatCompletionStreamingRunner extends ChatCompletionStream {
 
 
 
+
+function completions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const completions_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function completions_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => completions_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !completions_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Given a list of messages comprising a conversation, the model will return a response.
  */
@@ -9295,12 +9899,14 @@ class Completions extends APIResource {
         this.messages = new Messages(this._client);
     }
     create(body, options) {
-        return this._client.post('/chat/completions', {
+        return this._client
+            .post('/chat/completions', completions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             stream: body.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })))
+            ._thenUnwrap((result) => body.stream ? normalizeChatCompletionStream(result) : result);
     }
     /**
      * Get a stored chat completion. Only Chat Completions that have been created with
@@ -9313,10 +9919,7 @@ class Completions extends APIResource {
      * ```
      */
     retrieve(completionID, options) {
-        return this._client.get(path `/chat/completions/${completionID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/chat/completions/${completionID}`, completions_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Modify a stored chat completion. Only Chat Completions that have been created
@@ -9332,30 +9935,24 @@ class Completions extends APIResource {
      * ```
      */
     update(completionID, body, options) {
-        return this._client.post(path `/chat/completions/${completionID}`, {
+        return this._client.post(path `/chat/completions/${completionID}`, completions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * List stored Chat Completions. Only Chat Completions that have been stored with
-     * the `store` parameter set to `true` will be returned.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const chatCompletion of client.chat.completions.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/chat/completions', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = completions_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'metadata', 'model', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/chat/completions', (CursorPage), completions_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a stored chat completion. Only Chat Completions that have been created
@@ -9368,10 +9965,7 @@ class Completions extends APIResource {
      * ```
      */
     delete(completionID, options) {
-        return this._client.delete(path `/chat/completions/${completionID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.delete(path `/chat/completions/${completionID}`, completions_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     parse(body, options) {
         validateInputTools(body.tools);
@@ -9430,6 +10024,61 @@ Chat.Completions = Completions;
 
 
 
+function admin_api_keys_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const admin_api_keys_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function admin_api_keys_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => admin_api_keys_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !admin_api_keys_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class AdminAPIKeys extends APIResource {
     /**
      * Create an organization admin API key
@@ -9443,11 +10092,11 @@ class AdminAPIKeys extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/admin_api_keys', {
+        return this._client.post('/organization/admin_api_keys', admin_api_keys_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieve a single organization API key
@@ -9461,28 +10110,23 @@ class AdminAPIKeys extends APIResource {
      * ```
      */
     retrieve(keyID, options) {
-        return this._client.get(path `/organization/admin_api_keys/${keyID}`, {
+        return this._client.get(path `/organization/admin_api_keys/${keyID}`, admin_api_keys_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * List organization API keys
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const adminAPIKey of client.admin.organization.adminAPIKeys.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/admin_api_keys', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = admin_api_keys_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/admin_api_keys', (CursorPage), admin_api_keys_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Delete an organization admin API key
@@ -9496,10 +10140,10 @@ class AdminAPIKeys extends APIResource {
      * ```
      */
     delete(keyID, options) {
-        return this._client.delete(path `/organization/admin_api_keys/${keyID}`, {
+        return this._client.delete(path `/organization/admin_api_keys/${keyID}`, admin_api_keys_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=admin-api-keys.mjs.map
@@ -9507,27 +10151,88 @@ class AdminAPIKeys extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function audit_logs_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const audit_logs_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function audit_logs_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => audit_logs_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !audit_logs_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * List user actions and configuration changes within this organization.
  */
 class AuditLogs extends APIResource {
-    /**
-     * List user actions and configuration changes within this organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const auditLogListResponse of client.admin.organization.auditLogs.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/audit_logs', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = audit_logs_normalizeRequestOptionsForQuery(query, [
+            'actor_emails',
+            'actor_ids',
+            'after',
+            'before',
+            'effective_at',
+            'event_types',
+            'limit',
+            'project_ids',
+            'resource_ids',
+            'tenant_only',
+        ], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/audit_logs', (ConversationCursorPage), audit_logs_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=audit-logs.mjs.map
@@ -9536,6 +10241,61 @@ class AuditLogs extends APIResource {
 
 
 
+function certificates_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const certificates_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function certificates_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => certificates_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !certificates_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Certificates extends APIResource {
     /**
      * Upload a certificate to the organization. This does **not** automatically
@@ -9552,31 +10312,24 @@ class Certificates extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/certificates', {
+        return this._client.post('/organization/certificates', certificates_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Get a certificate that has been uploaded to the organization.
-     *
-     * You can get a certificate regardless of whether it is active or not.
-     *
-     * @example
-     * ```ts
-     * const certificate =
-     *   await client.admin.organization.certificates.retrieve(
-     *     'certificate_id',
-     *   );
-     * ```
-     */
     retrieve(certificateID, query = {}, options) {
-        return this._client.get(path `/organization/certificates/${certificateID}`, {
+        const normalizeRequestOptionsForQueryOptions = certificates_normalizeRequestOptionsForQuery(query, ['include'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.get(path `/organization/certificates/${certificateID}`, certificates_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Modify a certificate. Note that only the name can be modified.
@@ -9590,25 +10343,24 @@ class Certificates extends APIResource {
      * ```
      */
     update(certificateID, body, options) {
-        return this._client.post(path `/organization/certificates/${certificateID}`, {
+        return this._client.post(path `/organization/certificates/${certificateID}`, certificates_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * List uploaded certificates for this organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateListResponse of client.admin.organization.certificates.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/certificates', (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = certificates_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/certificates', (ConversationCursorPage), certificates_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Delete a certificate from the organization.
@@ -9624,10 +10376,10 @@ class Certificates extends APIResource {
      * ```
      */
     delete(certificateID, options) {
-        return this._client.delete(path `/organization/certificates/${certificateID}`, {
+        return this._client.delete(path `/organization/certificates/${certificateID}`, certificates_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Activate certificates at the organization level.
@@ -9645,12 +10397,12 @@ class Certificates extends APIResource {
      * ```
      */
     activate(body, options) {
-        return this._client.getAPIList('/organization/certificates/activate', (Page), {
+        return this._client.getAPIList('/organization/certificates/activate', (Page), certificates_resolveResourceRequestOptions(options, (options) => ({
             body,
             method: 'post',
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deactivate certificates at the organization level.
@@ -9668,13 +10420,21 @@ class Certificates extends APIResource {
      * ```
      */
     deactivate(body, options) {
-        return this._client.getAPIList('/organization/certificates/deactivate', (Page), { body, method: 'post', ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList('/organization/certificates/deactivate', (Page), certificates_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=certificates.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/data-retention.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function data_retention_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class DataRetention extends APIResource {
     /**
      * Retrieves organization data retention controls.
@@ -9686,10 +10446,10 @@ class DataRetention extends APIResource {
      * ```
      */
     retrieve(options) {
-        return this._client.get('/organization/data_retention', {
+        return this._client.get('/organization/data_retention', data_retention_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates organization data retention controls.
@@ -9703,19 +10463,227 @@ class DataRetention extends APIResource {
      * ```
      */
     update(body, options) {
-        return this._client.post('/organization/data_retention', {
+        return this._client.post('/organization/data_retention', data_retention_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=data-retention.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/external-storage.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+
+function external_storage_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const external_storage_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function external_storage_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => external_storage_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !external_storage_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+class ExternalStorage extends APIResource {
+    /**
+     * Register one customer-managed external storage configuration.
+     *
+     * @example
+     * ```ts
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.create({
+     *     project_id: 'proj_123',
+     *     provider: {
+     *       bucket: 'bucket',
+     *       role_arn: 'role_arn',
+     *       type: 'aws',
+     *     },
+     *   });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/organization/external_storage', external_storage_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Get one customer-managed external storage configuration.
+     *
+     * @example
+     * ```ts
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.retrieve(
+     *     'extstorage_123',
+     *   );
+     * ```
+     */
+    retrieve(externalStorageID, options) {
+        return this._client.get(path `/organization/external_storage/${externalStorageID}`, external_storage_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = external_storage_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'project_id'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/external_storage', (CursorPage), external_storage_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Disconnect a customer-managed external storage configuration. Removing the
+     * project's last configuration restores organization-default retention if
+     * customer-managed retention was active. Repeating a deletion also completes any
+     * interrupted retention update. Cloud storage is unchanged.
+     *
+     * @example
+     * ```ts
+     * const externalStorageDeleted =
+     *   await client.admin.organization.externalStorage.delete(
+     *     'extstorage_123',
+     *   );
+     * ```
+     */
+    delete(externalStorageID, options) {
+        return this._client.delete(path `/organization/external_storage/${externalStorageID}`, external_storage_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+    /**
+     * Validate one customer-managed external storage configuration.
+     *
+     * @example
+     * ```ts
+     * const externalStorageConfiguration =
+     *   await client.admin.organization.externalStorage.validate(
+     *     'extstorage_123',
+     *   );
+     * ```
+     */
+    validate(externalStorageID, options) {
+        return this._client.post(path `/organization/external_storage/${externalStorageID}/validate`, external_storage_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
+    }
+}
+//# sourceMappingURL=external-storage.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/invites.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
+function invites_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const invites_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function invites_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => invites_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !invites_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Invites extends APIResource {
     /**
      * Create an invite for a user to the organization. The invite must be accepted by
@@ -9731,11 +10699,11 @@ class Invites extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/invites', {
+        return this._client.post('/organization/invites', invites_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an invite.
@@ -9749,28 +10717,23 @@ class Invites extends APIResource {
      * ```
      */
     retrieve(inviteID, options) {
-        return this._client.get(path `/organization/invites/${inviteID}`, {
+        return this._client.get(path `/organization/invites/${inviteID}`, invites_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of invites in the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const invite of client.admin.organization.invites.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/invites', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = invites_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/invites', (ConversationCursorPage), invites_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Delete an invite. If the invite has already been accepted, it cannot be deleted.
@@ -9784,10 +10747,10 @@ class Invites extends APIResource {
      * ```
      */
     delete(inviteID, options) {
-        return this._client.delete(path `/organization/invites/${inviteID}`, {
+        return this._client.delete(path `/organization/invites/${inviteID}`, invites_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=invites.mjs.map
@@ -9796,6 +10759,61 @@ class Invites extends APIResource {
 
 
 
+function roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const roles_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function roles_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => roles_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !roles_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Roles extends APIResource {
     /**
      * Creates a custom role for the organization.
@@ -9809,11 +10827,11 @@ class Roles extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/roles', {
+        return this._client.post('/organization/roles', roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an organization role.
@@ -9826,10 +10844,10 @@ class Roles extends APIResource {
      * ```
      */
     retrieve(roleID, options) {
-        return this._client.get(path `/organization/roles/${roleID}`, {
+        return this._client.get(path `/organization/roles/${roleID}`, roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates an existing organization role.
@@ -9842,29 +10860,24 @@ class Roles extends APIResource {
      * ```
      */
     update(roleID, body, options) {
-        return this._client.post(path `/organization/roles/${roleID}`, {
+        return this._client.post(path `/organization/roles/${roleID}`, roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the roles configured for the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const role of client.admin.organization.roles.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/roles', (NextCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = roles_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/roles', (NextCursorPage), roles_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a custom role from the organization.
@@ -9877,10 +10890,10 @@ class Roles extends APIResource {
      * ```
      */
     delete(roleID, options) {
-        return this._client.delete(path `/organization/roles/${roleID}`, {
+        return this._client.delete(path `/organization/roles/${roleID}`, roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -9889,6 +10902,61 @@ class Roles extends APIResource {
 
 
 
+function spend_alerts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const spend_alerts_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function spend_alerts_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => spend_alerts_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !spend_alerts_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class SpendAlerts extends APIResource {
     /**
      * Creates an organization spend alert.
@@ -9908,11 +10976,11 @@ class SpendAlerts extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/spend_alerts', {
+        return this._client.post('/organization/spend_alerts', spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an organization spend alert.
@@ -9926,10 +10994,10 @@ class SpendAlerts extends APIResource {
      * ```
      */
     retrieve(alertID, options) {
-        return this._client.get(path `/organization/spend_alerts/${alertID}`, {
+        return this._client.get(path `/organization/spend_alerts/${alertID}`, spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates an organization spend alert.
@@ -9952,25 +11020,24 @@ class SpendAlerts extends APIResource {
      * ```
      */
     update(alertID, body, options) {
-        return this._client.post(path `/organization/spend_alerts/${alertID}`, {
+        return this._client.post(path `/organization/spend_alerts/${alertID}`, spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists organization spend alerts.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const organizationSpendAlert of client.admin.organization.spendAlerts.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/spend_alerts', (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = spend_alerts_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/spend_alerts', (ConversationCursorPage), spend_alerts_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deletes an organization spend alert.
@@ -9984,16 +11051,19 @@ class SpendAlerts extends APIResource {
      * ```
      */
     delete(alertID, options) {
-        return this._client.delete(path `/organization/spend_alerts/${alertID}`, {
+        return this._client.delete(path `/organization/spend_alerts/${alertID}`, spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=spend-alerts.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/spend-limit.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function spend_limit_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class SpendLimit extends APIResource {
     /**
      * Get the organization's hard spend limit.
@@ -10005,10 +11075,10 @@ class SpendLimit extends APIResource {
      * ```
      */
     retrieve(options) {
-        return this._client.get('/organization/spend_limit', {
+        return this._client.get('/organization/spend_limit', spend_limit_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Create or replace the organization's hard spend limit.
@@ -10024,11 +11094,11 @@ class SpendLimit extends APIResource {
      * ```
      */
     update(body, options) {
-        return this._client.post('/organization/spend_limit', {
+        return this._client.post('/organization/spend_limit', spend_limit_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Delete the organization's hard spend limit.
@@ -10040,16 +11110,19 @@ class SpendLimit extends APIResource {
      * ```
      */
     delete(options) {
-        return this._client.delete('/organization/spend_limit', {
+        return this._client.delete('/organization/spend_limit', spend_limit_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=spend-limit.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/usage.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function usage_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Usage extends APIResource {
     /**
      * Get audio speeches usage details for the organization.
@@ -10063,11 +11136,11 @@ class Usage extends APIResource {
      * ```
      */
     audioSpeeches(query, options) {
-        return this._client.get('/organization/usage/audio_speeches', {
+        return this._client.get('/organization/usage/audio_speeches', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get audio transcriptions usage details for the organization.
@@ -10081,11 +11154,11 @@ class Usage extends APIResource {
      * ```
      */
     audioTranscriptions(query, options) {
-        return this._client.get('/organization/usage/audio_transcriptions', {
+        return this._client.get('/organization/usage/audio_transcriptions', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get code interpreter sessions usage details for the organization.
@@ -10099,11 +11172,11 @@ class Usage extends APIResource {
      * ```
      */
     codeInterpreterSessions(query, options) {
-        return this._client.get('/organization/usage/code_interpreter_sessions', {
+        return this._client.get('/organization/usage/code_interpreter_sessions', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get completions usage details for the organization.
@@ -10117,11 +11190,11 @@ class Usage extends APIResource {
      * ```
      */
     completions(query, options) {
-        return this._client.get('/organization/usage/completions', {
+        return this._client.get('/organization/usage/completions', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get costs details for the organization.
@@ -10135,11 +11208,11 @@ class Usage extends APIResource {
      * ```
      */
     costs(query, options) {
-        return this._client.get('/organization/costs', {
+        return this._client.get('/organization/costs', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get embeddings usage details for the organization.
@@ -10153,11 +11226,11 @@ class Usage extends APIResource {
      * ```
      */
     embeddings(query, options) {
-        return this._client.get('/organization/usage/embeddings', {
+        return this._client.get('/organization/usage/embeddings', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get file search calls usage details for the organization.
@@ -10171,11 +11244,11 @@ class Usage extends APIResource {
      * ```
      */
     fileSearchCalls(query, options) {
-        return this._client.get('/organization/usage/file_search_calls', {
+        return this._client.get('/organization/usage/file_search_calls', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get images usage details for the organization.
@@ -10189,11 +11262,11 @@ class Usage extends APIResource {
      * ```
      */
     images(query, options) {
-        return this._client.get('/organization/usage/images', {
+        return this._client.get('/organization/usage/images', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get moderations usage details for the organization.
@@ -10207,11 +11280,11 @@ class Usage extends APIResource {
      * ```
      */
     moderations(query, options) {
-        return this._client.get('/organization/usage/moderations', {
+        return this._client.get('/organization/usage/moderations', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get vector stores usage details for the organization.
@@ -10225,11 +11298,11 @@ class Usage extends APIResource {
      * ```
      */
     vectorStores(query, options) {
-        return this._client.get('/organization/usage/vector_stores', {
+        return this._client.get('/organization/usage/vector_stores', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Get web search calls usage details for the organization.
@@ -10243,11 +11316,11 @@ class Usage extends APIResource {
      * ```
      */
     webSearchCalls(query, options) {
-        return this._client.get('/organization/usage/web_search_calls', {
+        return this._client.get('/organization/usage/web_search_calls', usage_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=usage.mjs.map
@@ -10256,6 +11329,61 @@ class Usage extends APIResource {
 
 
 
+function groups_roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const groups_roles_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function groups_roles_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => groups_roles_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !groups_roles_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class roles_Roles extends APIResource {
     /**
      * Assigns an organization role to a group within the organization.
@@ -10270,11 +11398,11 @@ class roles_Roles extends APIResource {
      * ```
      */
     create(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}/roles`, {
+        return this._client.post(path `/organization/groups/${groupID}/roles`, groups_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an organization role assigned to a group.
@@ -10290,26 +11418,23 @@ class roles_Roles extends APIResource {
      */
     retrieve(roleID, params, options) {
         const { group_id } = params;
-        return this._client.get(path `/organization/groups/${group_id}/roles/${roleID}`, {
+        return this._client.get(path `/organization/groups/${group_id}/roles/${roleID}`, groups_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the organization roles assigned to a group within the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const roleListResponse of client.admin.organization.groups.roles.list(
-     *   'group_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(groupID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/groups/${groupID}/roles`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = groups_roles_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/groups/${groupID}/roles`, (NextCursorPage), groups_roles_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Unassigns an organization role from a group within the organization.
@@ -10325,10 +11450,10 @@ class roles_Roles extends APIResource {
      */
     delete(roleID, params, options) {
         const { group_id } = params;
-        return this._client.delete(path `/organization/groups/${group_id}/roles/${roleID}`, {
+        return this._client.delete(path `/organization/groups/${group_id}/roles/${roleID}`, groups_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -10337,6 +11462,61 @@ class roles_Roles extends APIResource {
 
 
 
+function users_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const users_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function users_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => users_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !users_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Users extends APIResource {
     /**
      * Adds a user to a group.
@@ -10351,11 +11531,11 @@ class Users extends APIResource {
      * ```
      */
     create(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}/users`, {
+        return this._client.post(path `/organization/groups/${groupID}/users`, users_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a user in a group.
@@ -10371,26 +11551,23 @@ class Users extends APIResource {
      */
     retrieve(userID, params, options) {
         const { group_id } = params;
-        return this._client.get(path `/organization/groups/${group_id}/users/${userID}`, {
+        return this._client.get(path `/organization/groups/${group_id}/users/${userID}`, users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the users assigned to a group.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const organizationGroupUser of client.admin.organization.groups.users.list(
-     *   'group_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(groupID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/groups/${groupID}/users`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = users_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/groups/${groupID}/users`, (NextCursorPage), users_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Removes a user from a group.
@@ -10406,10 +11583,10 @@ class Users extends APIResource {
      */
     delete(userID, params, options) {
         const { group_id } = params;
-        return this._client.delete(path `/organization/groups/${group_id}/users/${userID}`, {
+        return this._client.delete(path `/organization/groups/${group_id}/users/${userID}`, users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=users.mjs.map
@@ -10422,6 +11599,61 @@ class Users extends APIResource {
 
 
 
+function groups_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const groups_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function groups_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => groups_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !groups_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Groups extends APIResource {
     constructor() {
         super(...arguments);
@@ -10439,11 +11671,11 @@ class Groups extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/groups', {
+        return this._client.post('/organization/groups', groups_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a group.
@@ -10457,10 +11689,10 @@ class Groups extends APIResource {
      * ```
      */
     retrieve(groupID, options) {
-        return this._client.get(path `/organization/groups/${groupID}`, {
+        return this._client.get(path `/organization/groups/${groupID}`, groups_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates a group's information.
@@ -10474,29 +11706,24 @@ class Groups extends APIResource {
      * ```
      */
     update(groupID, body, options) {
-        return this._client.post(path `/organization/groups/${groupID}`, {
+        return this._client.post(path `/organization/groups/${groupID}`, groups_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists all groups in the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const group of client.admin.organization.groups.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/groups', (NextCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = groups_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/groups', (NextCursorPage), groups_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a group from the organization.
@@ -10509,10 +11736,10 @@ class Groups extends APIResource {
      * ```
      */
     delete(groupID, options) {
-        return this._client.delete(path `/organization/groups/${groupID}`, {
+        return this._client.delete(path `/organization/groups/${groupID}`, groups_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 Groups.Users = Users;
@@ -10523,6 +11750,61 @@ Groups.Roles = roles_Roles;
 
 
 
+function api_keys_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const api_keys_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function api_keys_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => api_keys_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !api_keys_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class APIKeys extends APIResource {
     /**
      * Retrieves an API key in the project.
@@ -10538,26 +11820,23 @@ class APIKeys extends APIResource {
      */
     retrieve(apiKeyID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
+        return this._client.get(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, api_keys_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of API keys in the project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectAPIKey of client.admin.organization.projects.apiKeys.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/api_keys`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = api_keys_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'owner_project_access'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/api_keys`, (ConversationCursorPage), api_keys_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deletes an API key from the project.
@@ -10576,10 +11855,10 @@ class APIKeys extends APIResource {
      */
     delete(apiKeyID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, {
+        return this._client.delete(path `/organization/projects/${project_id}/api_keys/${apiKeyID}`, api_keys_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=api-keys.mjs.map
@@ -10588,22 +11867,74 @@ class APIKeys extends APIResource {
 
 
 
+function projects_certificates_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const projects_certificates_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function projects_certificates_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => projects_certificates_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !projects_certificates_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class certificates_Certificates extends APIResource {
-    /**
-     * List certificates for this project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const certificateListResponse of client.admin.organization.projects.certificates.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = projects_certificates_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates`, (ConversationCursorPage), projects_certificates_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Activate certificates at the project level.
@@ -10622,7 +11953,12 @@ class certificates_Certificates extends APIResource {
      * ```
      */
     activate(projectID, body, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/activate`, (Page), { body, method: 'post', ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/activate`, (Page), projects_certificates_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deactivate certificates at the project level. You can atomically and
@@ -10640,7 +11976,12 @@ class certificates_Certificates extends APIResource {
      * ```
      */
     deactivate(projectID, body, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/deactivate`, (Page), { body, method: 'post', ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList(path `/organization/projects/${projectID}/certificates/deactivate`, (Page), projects_certificates_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=certificates.mjs.map
@@ -10648,6 +11989,9 @@ class certificates_Certificates extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function projects_data_retention_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class data_retention_DataRetention extends APIResource {
     /**
      * Retrieves project data retention controls.
@@ -10661,10 +12005,10 @@ class data_retention_DataRetention extends APIResource {
      * ```
      */
     retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/data_retention`, {
+        return this._client.get(path `/organization/projects/${projectID}/data_retention`, projects_data_retention_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates project data retention controls.
@@ -10679,11 +12023,11 @@ class data_retention_DataRetention extends APIResource {
      * ```
      */
     update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/data_retention`, {
+        return this._client.post(path `/organization/projects/${projectID}/data_retention`, projects_data_retention_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=data-retention.mjs.map
@@ -10691,6 +12035,9 @@ class data_retention_DataRetention extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function hosted_tool_permissions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class HostedToolPermissions extends APIResource {
     /**
      * Returns hosted tool permissions for a project.
@@ -10704,10 +12051,10 @@ class HostedToolPermissions extends APIResource {
      * ```
      */
     retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/hosted_tool_permissions`, {
+        return this._client.get(path `/organization/projects/${projectID}/hosted_tool_permissions`, hosted_tool_permissions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates hosted tool permissions for a project.
@@ -10721,11 +12068,11 @@ class HostedToolPermissions extends APIResource {
      * ```
      */
     update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/hosted_tool_permissions`, {
+        return this._client.post(path `/organization/projects/${projectID}/hosted_tool_permissions`, hosted_tool_permissions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=hosted-tool-permissions.mjs.map
@@ -10733,6 +12080,9 @@ class HostedToolPermissions extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function model_permissions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class ModelPermissions extends APIResource {
     /**
      * Returns model permissions for a project.
@@ -10746,10 +12096,10 @@ class ModelPermissions extends APIResource {
      * ```
      */
     retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/model_permissions`, {
+        return this._client.get(path `/organization/projects/${projectID}/model_permissions`, model_permissions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates model permissions for a project.
@@ -10764,11 +12114,11 @@ class ModelPermissions extends APIResource {
      * ```
      */
     update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/model_permissions`, {
+        return this._client.post(path `/organization/projects/${projectID}/model_permissions`, model_permissions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deletes model permissions for a project.
@@ -10782,10 +12132,10 @@ class ModelPermissions extends APIResource {
      * ```
      */
     delete(projectID, options) {
-        return this._client.delete(path `/organization/projects/${projectID}/model_permissions`, {
+        return this._client.delete(path `/organization/projects/${projectID}/model_permissions`, model_permissions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=model-permissions.mjs.map
@@ -10794,22 +12144,74 @@ class ModelPermissions extends APIResource {
 
 
 
+function rate_limits_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const rate_limits_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function rate_limits_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => rate_limits_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !rate_limits_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class RateLimits extends APIResource {
-    /**
-     * Returns the rate limits per model for a project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectRateLimit of client.admin.organization.projects.rateLimits.listRateLimits(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     listRateLimits(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/rate_limits`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = rate_limits_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/rate_limits`, (ConversationCursorPage), rate_limits_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Updates a project rate limit.
@@ -10825,11 +12227,11 @@ class RateLimits extends APIResource {
      */
     updateRateLimit(rateLimitID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/rate_limits/${rateLimitID}`, {
+        return this._client.post(path `/organization/projects/${project_id}/rate_limits/${rateLimitID}`, rate_limits_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=rate-limits.mjs.map
@@ -10838,6 +12240,61 @@ class RateLimits extends APIResource {
 
 
 
+function projects_roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const projects_roles_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function projects_roles_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => projects_roles_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !projects_roles_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class projects_roles_Roles extends APIResource {
     /**
      * Creates a custom role for a project.
@@ -10852,11 +12309,11 @@ class projects_roles_Roles extends APIResource {
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/projects/${projectID}/roles`, {
+        return this._client.post(path `/projects/${projectID}/roles`, projects_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project role.
@@ -10872,10 +12329,10 @@ class projects_roles_Roles extends APIResource {
      */
     retrieve(roleID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/projects/${project_id}/roles/${roleID}`, {
+        return this._client.get(path `/projects/${project_id}/roles/${roleID}`, projects_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates an existing project role.
@@ -10891,31 +12348,24 @@ class projects_roles_Roles extends APIResource {
      */
     update(roleID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/roles/${roleID}`, {
+        return this._client.post(path `/projects/${project_id}/roles/${roleID}`, projects_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the roles configured for a project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const role of client.admin.organization.projects.roles.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/projects/${projectID}/roles`, (NextCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = projects_roles_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/projects/${projectID}/roles`, (NextCursorPage), projects_roles_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a custom role from a project.
@@ -10931,10 +12381,10 @@ class projects_roles_Roles extends APIResource {
      */
     delete(roleID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/projects/${project_id}/roles/${roleID}`, {
+        return this._client.delete(path `/projects/${project_id}/roles/${roleID}`, projects_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -10943,6 +12393,61 @@ class projects_roles_Roles extends APIResource {
 
 
 
+function projects_spend_alerts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const projects_spend_alerts_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function projects_spend_alerts_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => projects_spend_alerts_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !projects_spend_alerts_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class spend_alerts_SpendAlerts extends APIResource {
     /**
      * Creates a project spend alert.
@@ -10965,11 +12470,11 @@ class spend_alerts_SpendAlerts extends APIResource {
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/spend_alerts`, {
+        return this._client.post(path `/organization/projects/${projectID}/spend_alerts`, projects_spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project spend alert.
@@ -10985,10 +12490,10 @@ class spend_alerts_SpendAlerts extends APIResource {
      */
     retrieve(alertID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, {
+        return this._client.get(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, projects_spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates a project spend alert.
@@ -11013,27 +12518,24 @@ class spend_alerts_SpendAlerts extends APIResource {
      */
     update(alertID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, {
+        return this._client.post(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, projects_spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists project spend alerts.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectSpendAlert of client.admin.organization.projects.spendAlerts.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/spend_alerts`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = projects_spend_alerts_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/spend_alerts`, (ConversationCursorPage), projects_spend_alerts_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deletes a project spend alert.
@@ -11049,10 +12551,10 @@ class spend_alerts_SpendAlerts extends APIResource {
      */
     delete(alertID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, {
+        return this._client.delete(path `/organization/projects/${project_id}/spend_alerts/${alertID}`, projects_spend_alerts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=spend-alerts.mjs.map
@@ -11060,6 +12562,9 @@ class spend_alerts_SpendAlerts extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function projects_spend_limit_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class spend_limit_SpendLimit extends APIResource {
     /**
      * Get a project's hard spend limit.
@@ -11073,10 +12578,10 @@ class spend_limit_SpendLimit extends APIResource {
      * ```
      */
     retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}/spend_limit`, {
+        return this._client.get(path `/organization/projects/${projectID}/spend_limit`, projects_spend_limit_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Create or replace a project's hard spend limit.
@@ -11095,11 +12600,11 @@ class spend_limit_SpendLimit extends APIResource {
      * ```
      */
     update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/spend_limit`, {
+        return this._client.post(path `/organization/projects/${projectID}/spend_limit`, projects_spend_limit_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Delete a project's hard spend limit.
@@ -11113,10 +12618,10 @@ class spend_limit_SpendLimit extends APIResource {
      * ```
      */
     delete(projectID, options) {
-        return this._client.delete(path `/organization/projects/${projectID}/spend_limit`, {
+        return this._client.delete(path `/organization/projects/${projectID}/spend_limit`, projects_spend_limit_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=spend-limit.mjs.map
@@ -11125,6 +12630,9 @@ class spend_limit_SpendLimit extends APIResource {
 
 
 
+function projects_groups_roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class groups_roles_Roles extends APIResource {
     /**
      * Assigns a project role to a group within a project.
@@ -11140,11 +12648,11 @@ class groups_roles_Roles extends APIResource {
      */
     create(groupID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/groups/${groupID}/roles`, {
+        return this._client.post(path `/projects/${project_id}/groups/${groupID}/roles`, projects_groups_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project role assigned to a group.
@@ -11160,10 +12668,10 @@ class groups_roles_Roles extends APIResource {
      */
     retrieve(roleID, params, options) {
         const { project_id, group_id } = params;
-        return this._client.get(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, {
+        return this._client.get(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, projects_groups_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Lists the project roles assigned to a group within a project.
@@ -11181,7 +12689,11 @@ class groups_roles_Roles extends APIResource {
      */
     list(groupID, params, options) {
         const { project_id, ...query } = params;
-        return this._client.getAPIList(path `/projects/${project_id}/groups/${groupID}/roles`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList(path `/projects/${project_id}/groups/${groupID}/roles`, (NextCursorPage), projects_groups_roles_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Unassigns a project role from a group within a project.
@@ -11197,10 +12709,10 @@ class groups_roles_Roles extends APIResource {
      */
     delete(roleID, params, options) {
         const { project_id, group_id } = params;
-        return this._client.delete(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, {
+        return this._client.delete(path `/projects/${project_id}/groups/${group_id}/roles/${roleID}`, projects_groups_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -11211,6 +12723,61 @@ class groups_roles_Roles extends APIResource {
 
 
 
+function groups_groups_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const groups_groups_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function groups_groups_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => groups_groups_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !groups_groups_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class groups_Groups extends APIResource {
     constructor() {
         super(...arguments);
@@ -11229,11 +12796,11 @@ class groups_Groups extends APIResource {
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/groups`, {
+        return this._client.post(path `/organization/projects/${projectID}/groups`, groups_groups_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project's group.
@@ -11249,27 +12816,24 @@ class groups_Groups extends APIResource {
      */
     retrieve(groupID, params, options) {
         const { project_id, ...query } = params;
-        return this._client.get(path `/organization/projects/${project_id}/groups/${groupID}`, {
+        return this._client.get(path `/organization/projects/${project_id}/groups/${groupID}`, groups_groups_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the groups that have access to a project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectGroup of client.admin.organization.projects.groups.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/groups`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = groups_groups_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/groups`, (NextCursorPage), groups_groups_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Revokes a group's access to a project.
@@ -11285,10 +12849,10 @@ class groups_Groups extends APIResource {
      */
     delete(groupID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/groups/${groupID}`, {
+        return this._client.delete(path `/organization/projects/${project_id}/groups/${groupID}`, groups_groups_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 groups_Groups.Roles = groups_roles_Roles;
@@ -11297,6 +12861,9 @@ groups_Groups.Roles = groups_roles_Roles;
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function service_accounts_api_keys_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class api_keys_APIKeys extends APIResource {
     /**
      * Creates an API key for a service account in the project.
@@ -11312,7 +12879,11 @@ class api_keys_APIKeys extends APIResource {
      */
     create(serviceAccountID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}/api_keys`, { body, ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}/api_keys`, service_accounts_api_keys_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=api-keys.mjs.map
@@ -11323,6 +12894,61 @@ class api_keys_APIKeys extends APIResource {
 
 
 
+function service_accounts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const service_accounts_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function service_accounts_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => service_accounts_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !service_accounts_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class ServiceAccounts extends APIResource {
     constructor() {
         super(...arguments);
@@ -11342,11 +12968,11 @@ class ServiceAccounts extends APIResource {
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, {
+        return this._client.post(path `/organization/projects/${projectID}/service_accounts`, service_accounts_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a service account in the project.
@@ -11362,10 +12988,10 @@ class ServiceAccounts extends APIResource {
      */
     retrieve(serviceAccountID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, {
+        return this._client.get(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, service_accounts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Updates a service account in the project.
@@ -11381,23 +13007,24 @@ class ServiceAccounts extends APIResource {
      */
     update(serviceAccountID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { body, ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.post(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, service_accounts_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
-    /**
-     * Returns a list of service accounts in the project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectServiceAccount of client.admin.organization.projects.serviceAccounts.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = service_accounts_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/service_accounts`, (ConversationCursorPage), service_accounts_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deletes a service account from the project.
@@ -11416,7 +13043,10 @@ class ServiceAccounts extends APIResource {
      */
     delete(serviceAccountID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, { ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.delete(path `/organization/projects/${project_id}/service_accounts/${serviceAccountID}`, service_accounts_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
 ServiceAccounts.APIKeys = api_keys_APIKeys;
@@ -11426,6 +13056,9 @@ ServiceAccounts.APIKeys = api_keys_APIKeys;
 
 
 
+function users_roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class users_roles_Roles extends APIResource {
     /**
      * Assigns a project role to a user within a project.
@@ -11441,11 +13074,11 @@ class users_roles_Roles extends APIResource {
      */
     create(userID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/projects/${project_id}/users/${userID}/roles`, {
+        return this._client.post(path `/projects/${project_id}/users/${userID}/roles`, users_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project role assigned to a user.
@@ -11461,10 +13094,10 @@ class users_roles_Roles extends APIResource {
      */
     retrieve(roleID, params, options) {
         const { project_id, user_id } = params;
-        return this._client.get(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, {
+        return this._client.get(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, users_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Lists the project roles assigned to a user within a project.
@@ -11482,7 +13115,11 @@ class users_roles_Roles extends APIResource {
      */
     list(userID, params, options) {
         const { project_id, ...query } = params;
-        return this._client.getAPIList(path `/projects/${project_id}/users/${userID}/roles`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList(path `/projects/${project_id}/users/${userID}/roles`, (NextCursorPage), users_roles_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Unassigns a project role from a user within a project.
@@ -11498,10 +13135,10 @@ class users_roles_Roles extends APIResource {
      */
     delete(roleID, params, options) {
         const { project_id, user_id } = params;
-        return this._client.delete(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, {
+        return this._client.delete(path `/projects/${project_id}/users/${user_id}/roles/${roleID}`, users_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -11512,6 +13149,61 @@ class users_roles_Roles extends APIResource {
 
 
 
+function users_users_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const users_users_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function users_users_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => users_users_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !users_users_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class users_Users extends APIResource {
     constructor() {
         super(...arguments);
@@ -11531,11 +13223,11 @@ class users_Users extends APIResource {
      * ```
      */
     create(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}/users`, {
+        return this._client.post(path `/organization/projects/${projectID}/users`, users_users_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a user in the project.
@@ -11551,10 +13243,10 @@ class users_Users extends APIResource {
      */
     retrieve(userID, params, options) {
         const { project_id } = params;
-        return this._client.get(path `/organization/projects/${project_id}/users/${userID}`, {
+        return this._client.get(path `/organization/projects/${project_id}/users/${userID}`, users_users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a user's role in the project.
@@ -11570,27 +13262,24 @@ class users_Users extends APIResource {
      */
     update(userID, params, options) {
         const { project_id, ...body } = params;
-        return this._client.post(path `/organization/projects/${project_id}/users/${userID}`, {
+        return this._client.post(path `/organization/projects/${project_id}/users/${userID}`, users_users_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of users in the project.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const projectUser of client.admin.organization.projects.users.list(
-     *   'project_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(projectID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/projects/${projectID}/users`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = users_users_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/projects/${projectID}/users`, (ConversationCursorPage), users_users_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Deletes a user from the project.
@@ -11609,10 +13298,10 @@ class users_Users extends APIResource {
      */
     delete(userID, params, options) {
         const { project_id } = params;
-        return this._client.delete(path `/organization/projects/${project_id}/users/${userID}`, {
+        return this._client.delete(path `/organization/projects/${project_id}/users/${userID}`, users_users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 users_Users.Roles = users_roles_Roles;
@@ -11646,6 +13335,61 @@ users_Users.Roles = users_roles_Roles;
 
 
 
+function projects_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const projects_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function projects_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => projects_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !projects_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Projects extends APIResource {
     constructor() {
         super(...arguments);
@@ -11675,11 +13419,11 @@ class Projects extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/organization/projects', {
+        return this._client.post('/organization/projects', projects_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a project.
@@ -11693,10 +13437,10 @@ class Projects extends APIResource {
      * ```
      */
     retrieve(projectID, options) {
-        return this._client.get(path `/organization/projects/${projectID}`, {
+        return this._client.get(path `/organization/projects/${projectID}`, projects_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a project in the organization.
@@ -11710,29 +13454,24 @@ class Projects extends APIResource {
      * ```
      */
     update(projectID, body, options) {
-        return this._client.post(path `/organization/projects/${projectID}`, {
+        return this._client.post(path `/organization/projects/${projectID}`, projects_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of projects.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const project of client.admin.organization.projects.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/projects', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = projects_normalizeRequestOptionsForQuery(query, ['after', 'include_archived', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/projects', (ConversationCursorPage), projects_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Archives a project in the organization. Archived projects cannot be used or
@@ -11747,10 +13486,10 @@ class Projects extends APIResource {
      * ```
      */
     archive(projectID, options) {
-        return this._client.post(path `/organization/projects/${projectID}/archive`, {
+        return this._client.post(path `/organization/projects/${projectID}/archive`, projects_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 Projects.Users = users_Users;
@@ -11771,6 +13510,61 @@ Projects.Certificates = certificates_Certificates;
 
 
 
+function organization_users_roles_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const users_roles_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function users_roles_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => users_roles_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !users_roles_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class organization_users_roles_Roles extends APIResource {
     /**
      * Assigns an organization role to a user within the organization.
@@ -11785,11 +13579,11 @@ class organization_users_roles_Roles extends APIResource {
      * ```
      */
     create(userID, body, options) {
-        return this._client.post(path `/organization/users/${userID}/roles`, {
+        return this._client.post(path `/organization/users/${userID}/roles`, organization_users_roles_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an organization role assigned to a user.
@@ -11805,26 +13599,23 @@ class organization_users_roles_Roles extends APIResource {
      */
     retrieve(roleID, params, options) {
         const { user_id } = params;
-        return this._client.get(path `/organization/users/${user_id}/roles/${roleID}`, {
+        return this._client.get(path `/organization/users/${user_id}/roles/${roleID}`, organization_users_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists the organization roles assigned to a user within the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const roleListResponse of client.admin.organization.users.roles.list(
-     *   'user_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(userID, query = {}, options) {
-        return this._client.getAPIList(path `/organization/users/${userID}/roles`, (NextCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = users_roles_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/organization/users/${userID}/roles`, (NextCursorPage), organization_users_roles_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * Unassigns an organization role from a user within the organization.
@@ -11840,10 +13631,10 @@ class organization_users_roles_Roles extends APIResource {
      */
     delete(roleID, params, options) {
         const { user_id } = params;
-        return this._client.delete(path `/organization/users/${user_id}/roles/${roleID}`, {
+        return this._client.delete(path `/organization/users/${user_id}/roles/${roleID}`, organization_users_roles_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=roles.mjs.map
@@ -11854,6 +13645,61 @@ class organization_users_roles_Roles extends APIResource {
 
 
 
+function organization_users_users_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const organization_users_users_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function organization_users_users_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => organization_users_users_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !organization_users_users_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class users_users_Users extends APIResource {
     constructor() {
         super(...arguments);
@@ -11869,10 +13715,10 @@ class users_users_Users extends APIResource {
      * ```
      */
     retrieve(userID, options) {
-        return this._client.get(path `/organization/users/${userID}`, {
+        return this._client.get(path `/organization/users/${userID}`, organization_users_users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a user's role in the organization.
@@ -11884,29 +13730,24 @@ class users_users_Users extends APIResource {
      * ```
      */
     update(userID, body, options) {
-        return this._client.post(path `/organization/users/${userID}`, {
+        return this._client.post(path `/organization/users/${userID}`, organization_users_users_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists all of the users in the organization.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const organizationUser of client.admin.organization.users.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/organization/users', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = organization_users_users_normalizeRequestOptionsForQuery(query, ['after', 'emails', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/organization/users', (ConversationCursorPage), organization_users_users_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a user from the organization.
@@ -11919,16 +13760,18 @@ class users_users_Users extends APIResource {
      * ```
      */
     delete(userID, options) {
-        return this._client.delete(path `/organization/users/${userID}`, {
+        return this._client.delete(path `/organization/users/${userID}`, organization_users_users_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
 }
 users_users_Users.Roles = organization_users_roles_Roles;
 //# sourceMappingURL=users.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/admin/organization/organization.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
 
 
 
@@ -11965,6 +13808,7 @@ class Organization extends APIResource {
         this.groups = new Groups(this._client);
         this.roles = new Roles(this._client);
         this.dataRetention = new DataRetention(this._client);
+        this.externalStorage = new ExternalStorage(this._client);
         this.spendLimit = new SpendLimit(this._client);
         this.spendAlerts = new SpendAlerts(this._client);
         this.certificates = new Certificates(this._client);
@@ -11979,6 +13823,7 @@ Organization.Users = users_users_Users;
 Organization.Groups = Groups;
 Organization.Roles = Roles;
 Organization.DataRetention = DataRetention;
+Organization.ExternalStorage = ExternalStorage;
 Organization.SpendLimit = SpendLimit;
 Organization.SpendAlerts = SpendAlerts;
 Organization.Certificates = Certificates;
@@ -12001,6 +13846,9 @@ Admin.Organization = Organization;
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function speech_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Turn audio into text or text into audio.
  */
@@ -12015,7 +13863,7 @@ class Speech extends APIResource {
      * const speech = await client.audio.speech.create({
      *   input: 'input',
      *   model: 'tts-1',
-     *   voice: 'alloy',
+     *   voice: 'ash',
      * });
      *
      * const content = await speech.blob();
@@ -12023,13 +13871,13 @@ class Speech extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/audio/speech', {
+        return this._client.post('/audio/speech', speech_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: 'application/octet-stream' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
 }
 //# sourceMappingURL=speech.mjs.map
@@ -12037,18 +13885,21 @@ class Speech extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function transcriptions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Turn audio into text or text into audio.
  */
 class Transcriptions extends APIResource {
     create(body, options) {
-        return this._client.post('/audio/transcriptions', multipartFormRequestOptions({
+        return this._client.post('/audio/transcriptions', transcriptions_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({
             body,
             ...options,
             stream: body.stream ?? false,
             __metadata: { model: body.model },
             __security: { bearerAuth: true },
-        }, this._client));
+        }, this._client)));
     }
 }
 //# sourceMappingURL=transcriptions.mjs.map
@@ -12056,17 +13907,60 @@ class Transcriptions extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function translations_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Turn audio into text or text into audio.
  */
 class Translations extends APIResource {
     create(body, options) {
-        return this._client.post('/audio/translations', multipartFormRequestOptions({ body, ...options, __metadata: { model: body.model }, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/audio/translations', translations_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __metadata: { model: body.model }, __security: { bearerAuth: true } }, this._client)));
     }
 }
 //# sourceMappingURL=translations.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/audio/voices.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+function voices_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Turn audio into text or text into audio.
+ */
+class Voices extends APIResource {
+    /**
+     * Create a custom voice you can use for audio output (for example, in
+     * Text-to-Speech and the Realtime API). This requires an audio sample and a
+     * previously uploaded consent recording.
+     *
+     * Send `name`, `audio_sample`, and the `consent` recording ID as multipart form
+     * data. The optional `type` defaults to `audio_sample`.
+     *
+     * Returns the saved voice's metadata. See the
+     * [custom voices guide](https://developers.openai.com/api/docs/guides/text-to-speech#custom-voices)
+     * for requirements and best practices. Custom voices are limited to eligible
+     * customers.
+     *
+     * @example
+     * ```ts
+     * const voice = await client.audio.voices.create({
+     *   audio_sample: fs.createReadStream('path/to/file'),
+     *   consent: 'consent',
+     *   name: 'x',
+     * });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/audio/voices', voices_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
+    }
+}
+//# sourceMappingURL=voices.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/audio/audio.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
 
 
 
@@ -12080,17 +13974,74 @@ class Audio extends APIResource {
         this.transcriptions = new Transcriptions(this._client);
         this.translations = new Translations(this._client);
         this.speech = new Speech(this._client);
+        this.voices = new Voices(this._client);
     }
 }
 Audio.Transcriptions = Transcriptions;
 Audio.Translations = Translations;
 Audio.Speech = Speech;
+Audio.Voices = Voices;
 //# sourceMappingURL=audio.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/batches.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
+function batches_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const batches_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function batches_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => batches_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !batches_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Create large batches of API requests to run asynchronously.
  */
@@ -12099,23 +14050,30 @@ class Batches extends APIResource {
      * Creates and executes a batch from an uploaded file of requests
      */
     create(body, options) {
-        return this._client.post('/batches', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/batches', batches_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Retrieves a batch.
      */
     retrieve(batchID, options) {
-        return this._client.get(path `/batches/${batchID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/batches/${batchID}`, batches_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List your organization's batches.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/batches', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = batches_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/batches', (CursorPage), batches_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Cancels an in-progress batch. The batch will be in status `cancelling` for up to
@@ -12123,10 +14081,7 @@ class Batches extends APIResource {
      * (if any) available in the output file.
      */
     cancel(batchID, options) {
-        return this._client.post(path `/batches/${batchID}/cancel`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/batches/${batchID}/cancel`, batches_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 //# sourceMappingURL=batches.mjs.map
@@ -12136,6 +14091,61 @@ class Batches extends APIResource {
 
 
 
+function assistants_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const assistants_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function assistants_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => assistants_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !assistants_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Build Assistants that can call models and use tools.
  */
@@ -12146,12 +14156,12 @@ class Assistants extends APIResource {
      * @deprecated
      */
     create(body, options) {
-        return this._client.post('/assistants', {
+        return this._client.post('/assistants', assistants_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves an assistant.
@@ -12159,11 +14169,11 @@ class Assistants extends APIResource {
      * @deprecated
      */
     retrieve(assistantID, options) {
-        return this._client.get(path `/assistants/${assistantID}`, {
+        return this._client.get(path `/assistants/${assistantID}`, assistants_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Modifies an assistant.
@@ -12171,25 +14181,26 @@ class Assistants extends APIResource {
      * @deprecated
      */
     update(assistantID, body, options) {
-        return this._client.post(path `/assistants/${assistantID}`, {
+        return this._client.post(path `/assistants/${assistantID}`, assistants_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of assistants.
-     *
-     * @deprecated
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/assistants', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = assistants_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/assistants', (CursorPage), assistants_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete an assistant.
@@ -12197,11 +14208,11 @@ class Assistants extends APIResource {
      * @deprecated
      */
     delete(assistantID, options) {
-        return this._client.delete(path `/assistants/${assistantID}`, {
+        return this._client.delete(path `/assistants/${assistantID}`, assistants_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=assistants.mjs.map
@@ -12282,13 +14293,112 @@ class Realtime extends APIResource {
 Realtime.Sessions = Sessions;
 Realtime.TranscriptionSessions = TranscriptionSessions;
 //# sourceMappingURL=realtime.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/files.mjs
+
+
+/** Beta: uploaded file IDs remain available after partial preparation or staging failure. */
+class AgentFileUploadError extends error_OpenAIError {
+    constructor(uploadedFiles, cause) {
+        super('Agent file preparation or staging failed; uploaded files remain caller-owned.');
+        this.name = 'AgentFileUploadError';
+        this.uploadedFiles = uploadedFiles;
+        Object.defineProperty(this, 'cause', { value: cause, configurable: true });
+    }
+}
+/** @internal */
+function validateAgentFilePath(path) {
+    const parts = path.split('/');
+    const root = parts[2] ?? '';
+    if (!path.startsWith('/workspace/') ||
+        path.includes('\\') ||
+        path.includes('\0') ||
+        parts.slice(1).some((part) => part === '' || part === '.' || part === '..') ||
+        root === '.codex' ||
+        root === '.managed-agents' ||
+        root.startsWith('.managed-agents-') ||
+        path === '/workspace/outputs') {
+        throw new error_OpenAIError('Agent files require a non-reserved absolute file path inside /workspace');
+    }
+}
+function preflight(files, options) {
+    const entries = Object.entries(files);
+    const headers = buildHeaders([options.headers]);
+    if (entries.length > 1 &&
+        (headers.values.has('idempotency-key') ||
+            (!headers.nulls.has('idempotency-key') && options?.idempotencyKey !== undefined))) {
+        throw new error_OpenAIError('Do not reuse an Idempotency-Key across multiple file uploads');
+    }
+    const paths = new Set(entries.map(([path]) => path));
+    for (const [path] of entries) {
+        validateAgentFilePath(path);
+        for (let slash = path.lastIndexOf('/'); slash > 0; slash = path.lastIndexOf('/', slash - 1)) {
+            if (paths.has(path.slice(0, slash))) {
+                throw new error_OpenAIError('Agent file destinations conflict');
+            }
+        }
+    }
+    return entries;
+}
+/** @internal */
+async function prepareAgentFiles(client, files, options) {
+    const requestOptions = { ...options };
+    // Internal SDK read: capture effective headers once, including defaults and explicit omissions.
+    const headers = buildHeaders([client['_options'].defaultHeaders, requestOptions.headers]);
+    requestOptions.headers = headers;
+    const entries = preflight(files, requestOptions);
+    if (entries.length > 1) {
+        // Keep a later mutation of client defaults from adding one key to this entire batch.
+        headers.nulls.add('idempotency-key');
+    }
+    const prepared = { files: [], uploadedFiles: [] };
+    try {
+        for (const [path, file] of entries) {
+            // oxlint-disable-next-line no-await-in-loop -- Stop on the first failure and expose precisely the uploads already created.
+            const uploaded = await client.files.create({ file, purpose: 'user_data' }, requestOptions);
+            prepared.uploadedFiles.push(uploaded);
+            prepared.files.push({ type: 'file_id', file_id: uploaded.id, path });
+        }
+        return prepared;
+    }
+    catch (error) {
+        throw new AgentFileUploadError(prepared.uploadedFiles, error);
+    }
+}
+/** @internal */
+async function uploadAgentFile(client, resource, environmentID, params, options) {
+    const prepared = await prepareAgentFiles(client, { [params.path]: params.file }, options);
+    const [reference] = prepared.files;
+    const [uploadedFile] = prepared.uploadedFiles;
+    if (!reference || !uploadedFile) {
+        throw new error_OpenAIError('Missing prepared agent file');
+    }
+    try {
+        return { uploadedFile, environmentFile: await resource.create(environmentID, reference, options) };
+    }
+    catch (error) {
+        throw new AgentFileUploadError(prepared.uploadedFiles, error);
+    }
+}
+//# sourceMappingURL=files.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/environments/files.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
 
+
+function files_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Files extends APIResource {
+    /** Beta: prepare initial hosted file references; uploaded Files API objects remain caller-owned. */
+    prepare(files, options) {
+        return prepareAgentFiles(this._client, files, options);
+    }
+    /** Beta: upload one local file and stage its reference in a live environment. */
+    upload(environmentID, params, options) {
+        return uploadAgentFile(this._client, this, environmentID, params, options);
+    }
     /**
      * Copies inline bytes or a Files API file into a connected execution environment.
      * See
@@ -12308,12 +14418,12 @@ class Files extends APIResource {
      * ```
      */
     create(environmentID, body, options) {
-        return this._client.post(path `/agents/environments/${environmentID}/files`, {
+        return this._client.post(path `/agents/environments/${environmentID}/files`, files_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Lists live files on a connected execution environment with optional directory
@@ -12331,12 +14441,12 @@ class Files extends APIResource {
      * ```
      */
     list(environmentID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/environments/${environmentID}/files`, (TokenPage), {
+        return this._client.getAPIList(path `/agents/environments/${environmentID}/files`, (TokenPage), files_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=files.mjs.map
@@ -12346,6 +14456,61 @@ class Files extends APIResource {
 
 
 
+function templates_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const templates_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function templates_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => templates_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !templates_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Templates extends APIResource {
     /**
      * Creates reusable environment configuration without returning confidential setup
@@ -12359,12 +14524,12 @@ class Templates extends APIResource {
      * ```
      */
     create(body = {}, options) {
-        return this._client.post('/agents/environments/templates', {
+        return this._client.post('/agents/environments/templates', templates_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves reusable environment configuration without returning confidential
@@ -12380,11 +14545,11 @@ class Templates extends APIResource {
      * ```
      */
     retrieve(environmentTemplateID, options) {
-        return this._client.get(path `/agents/environments/templates/${environmentTemplateID}`, {
+        return this._client.get(path `/agents/environments/templates/${environmentTemplateID}`, templates_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Updates reusable environment configuration without returning confidential
@@ -12400,32 +14565,26 @@ class Templates extends APIResource {
      * ```
      */
     update(environmentTemplateID, body = {}, options) {
-        return this._client.post(path `/agents/environments/templates/${environmentTemplateID}`, {
+        return this._client.post(path `/agents/environments/templates/${environmentTemplateID}`, templates_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists reusable environment templates without returning confidential values. See
-     * [reusing a hosted setup](https://developers.openai.com/api/docs/guides/agents-api/tools#reuse-a-hosted-plugin-setup).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const environmentTemplate of client.beta.agents.environments.templates.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/agents/environments/templates', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = templates_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents/environments/templates', (CursorPage), templates_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes reusable environment configuration and all confidential template inputs.
@@ -12441,11 +14600,11 @@ class Templates extends APIResource {
      * ```
      */
     delete(environmentTemplateID, options) {
-        return this._client.delete(path `/agents/environments/templates/${environmentTemplateID}`, {
+        return this._client.delete(path `/agents/environments/templates/${environmentTemplateID}`, templates_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=templates.mjs.map
@@ -12458,11 +14617,94 @@ class Templates extends APIResource {
 
 
 
+
+function environments_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const environments_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function environments_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => environments_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !environments_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Environments extends APIResource {
     constructor() {
         super(...arguments);
         this.files = new Files(this._client);
         this.templates = new Templates(this._client);
+    }
+    /**
+     * Creates an OpenAI-hosted environment before creating a session. Requires access
+     * to the prewarming beta.
+     *
+     * @example
+     * ```ts
+     * const environmentInfo =
+     *   await client.beta.agents.environments.create({
+     *     environment: { type: 'openai_hosted' },
+     *   });
+     * ```
+     */
+    create(params, options) {
+        const { 'Idempotency-Key': idempotencyKey, ...body } = params;
+        return this._client.post('/agents/environments', environments_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            headers: buildHeaders([
+                {
+                    'OpenAI-Beta': 'agents=v1',
+                    ...(idempotencyKey != null ? { 'Idempotency-Key': idempotencyKey } : undefined),
+                },
+                options?.headers,
+            ]),
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Retrieves an execution environment's connection status and safe installed
@@ -12478,11 +14720,33 @@ class Environments extends APIResource {
      * ```
      */
     retrieve(environmentID, options) {
-        return this._client.get(path `/agents/environments/${environmentID}`, {
+        return this._client.get(path `/agents/environments/${environmentID}`, environments_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = environments_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'type'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents/environments', EnvironmentInfosPage, environments_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+class EnvironmentInfosPage extends CursorPage {
+    constructor(client, response, body, options) {
+        super(client, response, body, options);
+        this.object = body.object;
+        this.first_id = body.first_id;
+        this.last_id = body.last_id;
     }
 }
 Environments.Files = Files;
@@ -12547,14 +14811,12 @@ class TurnState {
 }
 _TurnState_turnID = new WeakMap(), _TurnState_turnEnded = new WeakMap(), _TurnState_eventIDs = new WeakMap(), _TurnState_calls = new WeakMap();
 //# sourceMappingURL=turn-state.mjs.map
-;// CONCATENATED MODULE: ./node_modules/openai/lib/agents/agent-session-stream.mjs
-var _AgentSessionStream_instances, _AgentSessionStream_consumed, _AgentSessionStream_stream, _AgentSessionStream_response, _AgentSessionStream_reading, _AgentSessionStream_sessions, _AgentSessionStream_sessionID, _AgentSessionStream_input, _AgentSessionStream_handlers, _AgentSessionStream_inputKey, _AgentSessionStream_options, _AgentSessionStream_iterate, _AgentSessionStream_result, _AgentSessionStream_checkAbort, _AgentSessionStream_abortError, _AgentSessionStream_wait, _AgentSessionStream_submit;
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/tool-output.mjs
 
-
-
-
-
-
+/**
+ * Recognizes supported content blocks without confusing JSON business data with content.
+ * @internal
+ */
 function isInputContent(value) {
     if (!isObj(value)) {
         return false;
@@ -12572,6 +14834,20 @@ function isInputContent(value) {
     }
     return hasOwn(content, 'type') && hasOwn(content, field) && typeof content[field] === 'string';
 }
+//# sourceMappingURL=tool-output.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/tool-stages.mjs
+/** @internal */
+const toolStages = Symbol.for('openai.beta.agents.toolStages');
+//# sourceMappingURL=tool-stages.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/tool-dispatcher.mjs
+var _AgentToolDispatcher_instances, _AgentToolDispatcher_handlers, _AgentToolDispatcher_options, _AgentToolDispatcher_sessions, _AgentToolDispatcher_controller, _AgentToolDispatcher_onToolError, _AgentToolDispatcher_result, _AgentToolDispatcher_checkAbort, _AgentToolDispatcher_abortError, _AgentToolDispatcher_wait, _AgentToolDispatcher_submit;
+
+
+
+
+
+
+
 function normalizedOutput(value) {
     if (value === null) {
         return null;
@@ -12581,8 +14857,9 @@ function normalizedOutput(value) {
     }
     throw new error_OpenAIError('Tool output must be text, content, a JSON object, or null');
 }
+// oxlint-disable-next-line anti-slop/no-object-parameters -- The public AgentToolOutput contract accepts arbitrary JSON-serializable object results.
 function toolResult(call, value) {
-    const output = value !== null && typeof value === 'object' && !Array.isArray(value) ? JSON.stringify(value) : value;
+    const output = isObj(value) ? JSON.stringify(value) : value;
     // Detect unserializable callback results inside the redacted failure boundary.
     const serialized = JSON.stringify(output);
     if (serialized === undefined) {
@@ -12596,6 +14873,552 @@ function toolResult(call, value) {
         output: normalizedOutput(typeof output === 'string' ? output : JSON.parse(serialized)),
     };
 }
+/** Shared local function dispatch for creation and follow-up streams. @internal */
+class AgentToolDispatcher {
+    constructor(sessions, handlers, controller, options, onToolError) {
+        _AgentToolDispatcher_instances.add(this);
+        _AgentToolDispatcher_handlers.set(this, void 0);
+        _AgentToolDispatcher_options.set(this, void 0);
+        _AgentToolDispatcher_sessions.set(this, void 0);
+        _AgentToolDispatcher_controller.set(this, void 0);
+        _AgentToolDispatcher_onToolError.set(this, void 0);
+        __classPrivateFieldSet(this, _AgentToolDispatcher_sessions, sessions, "f");
+        __classPrivateFieldSet(this, _AgentToolDispatcher_controller, controller, "f");
+        __classPrivateFieldSet(this, _AgentToolDispatcher_onToolError, onToolError, "f");
+        __classPrivateFieldSet(this, _AgentToolDispatcher_handlers, new Map(Object.entries(handlers)), "f");
+        const headers = buildHeaders([options?.headers]);
+        headers.values.delete('idempotency-key');
+        headers.nulls.delete('idempotency-key');
+        const { idempotencyKey: _key, ...rest } = options ?? {};
+        __classPrivateFieldSet(this, _AgentToolDispatcher_options, { ...rest, headers, signal: controller.signal }, "f");
+    }
+    canHandle(name) {
+        return typeof __classPrivateFieldGet(this, _AgentToolDispatcher_handlers, "f").get(name) === 'function';
+    }
+    /** Capture routing and arguments before the caller can mutate the yielded event. */
+    prepare(call, sessionID) {
+        const handler = call && __classPrivateFieldGet(this, _AgentToolDispatcher_handlers, "f").get(call.name);
+        if (!call || typeof handler !== 'function') {
+            return;
+        }
+        if (!sessionID) {
+            throw new error_OpenAIError('Tool call received before the session creation event');
+        }
+        const snapshot = structuredClone(call);
+        return async () => {
+            __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            const result = await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_result).call(this, snapshot, handler, sessionID);
+            __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_submit).call(this, sessionID, result);
+        };
+    }
+}
+_AgentToolDispatcher_handlers = new WeakMap(), _AgentToolDispatcher_options = new WeakMap(), _AgentToolDispatcher_sessions = new WeakMap(), _AgentToolDispatcher_controller = new WeakMap(), _AgentToolDispatcher_onToolError = new WeakMap(), _AgentToolDispatcher_instances = new WeakSet(), _AgentToolDispatcher_result = async function _AgentToolDispatcher_result(call, handler, sessionID) {
+    let stage = 'arguments';
+    try {
+        const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
+        if (!isObj(args)) {
+            throw new error_OpenAIError('Function arguments must be a JSON object');
+        }
+        stage = 'execution';
+        // SAFETY: Arguments were parsed as JSON and checked to be a non-null non-array object before invoking the handler.
+        const arguments_ = args;
+        const output = await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => __classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f") && handler[toolStages]
+            ? handler(arguments_, (value) => {
+                stage = value;
+            })
+            : handler(arguments_));
+        stage = 'output';
+        return toolResult(call, output);
+    }
+    catch (error) {
+        __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+        if (__classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f")) {
+            const failure = Object.freeze({
+                error,
+                stage,
+                tool_name: call.name,
+                session_id: sessionID,
+                turn_id: call.turn_id,
+                call_id: call.call_id,
+            });
+            try {
+                await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => __classPrivateFieldGet(this, _AgentToolDispatcher_onToolError, "f")?.call(this, failure));
+            }
+            catch {
+                // Observers must not prevent the original sanitized tool failure from being submitted.
+                __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+            }
+        }
+        return {
+            type: 'agent.session.input.tool_result',
+            turn_id: call.turn_id,
+            call_id: call.call_id,
+            success: false,
+            error: 'Tool handler failed.',
+        };
+    }
+}, _AgentToolDispatcher_checkAbort = function _AgentToolDispatcher_checkAbort() {
+    if (__classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.aborted) {
+        throw __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_abortError).call(this);
+    }
+}, _AgentToolDispatcher_abortError = function _AgentToolDispatcher_abortError() {
+    const error = new APIUserAbortError();
+    Object.defineProperty(error, 'cause', {
+        value: __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.reason,
+        writable: true,
+        configurable: true,
+    });
+    return error;
+}, _AgentToolDispatcher_wait = async function _AgentToolDispatcher_wait(action) {
+    let onAbort;
+    // oxlint-disable-next-line promise/avoid-new -- Bridge the caller's AbortSignal while a handler or registration delay is pending.
+    const aborted = new Promise((_resolve, reject) => {
+        onAbort = () => reject(__classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_abortError).call(this));
+        __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+        // Capture synchronous throws before racing cancellation, so both promises
+        // always have rejection handlers even if the callback aborts and throws.
+        const invoke = async () => await action();
+        return await Promise.race([invoke(), aborted]);
+    }
+    finally {
+        if (onAbort) {
+            __classPrivateFieldGet(this, _AgentToolDispatcher_controller, "f").signal.removeEventListener('abort', onAbort);
+        }
+    }
+}, _AgentToolDispatcher_submit = async function _AgentToolDispatcher_submit(sessionID, result, key = uuid4(), attempt = 0) {
+    __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_checkAbort).call(this);
+    try {
+        await __classPrivateFieldGet(this, _AgentToolDispatcher_sessions, "f").events.create(sessionID, { events: [result], 'Idempotency-Key': key }, __classPrivateFieldGet(this, _AgentToolDispatcher_options, "f"));
+    }
+    catch (error) {
+        const delay = [100, 300, 600][attempt];
+        if (delay === undefined ||
+            !(error instanceof BadRequestError) ||
+            error.code !== 'invalid_request_error' ||
+            !error.error ||
+            !('message' in error.error) ||
+            error.error.message !== `Unknown pending tool call: ${result.call_id}`) {
+            throw error;
+        }
+        let timer;
+        try {
+            await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_wait).call(this, () => 
+            // oxlint-disable-next-line promise/avoid-new -- Own the registration timer so cancellation clears it promptly.
+            new Promise((resolve) => {
+                timer = setTimeout(resolve, delay);
+            }));
+        }
+        finally {
+            if (timer !== undefined) {
+                clearTimeout(timer);
+            }
+        }
+        await __classPrivateFieldGet(this, _AgentToolDispatcher_instances, "m", _AgentToolDispatcher_submit).call(this, sessionID, result, key, attempt + 1);
+    }
+};
+//# sourceMappingURL=tool-dispatcher.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/agents/output-text.mjs
+/** Joins output_text blocks in content order, without filtering phase, fetching, or mutating the message. */
+function outputText(message) {
+    return message.content.map((block) => (block.type === 'output_text' ? block.text : '')).join('');
+}
+//# sourceMappingURL=output-text.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/agent-turn-result.mjs
+
+/** Beta: the completed final assistant messages from one hosted root turn. */
+class AgentTurnResult {
+    constructor(turn, messages) {
+        this.turn = turn;
+        this.messages = messages;
+    }
+    get session_id() {
+        return this.turn.session_id;
+    }
+    get turn_id() {
+        return this.turn.id;
+    }
+    get output_text() {
+        return this.messages.map(outputText).join('');
+    }
+}
+//# sourceMappingURL=agent-turn-result.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/parsed-agent-turn-result.mjs
+
+/** Beta: a completed hosted turn whose output passed the local parser. */
+class ParsedAgentTurnResult extends AgentTurnResult {
+    constructor(result, parsed) {
+        super(result.turn, result.messages);
+        this.raw_result = result;
+        this.output_parsed = parsed;
+    }
+}
+//# sourceMappingURL=parsed-agent-turn-result.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/output-parse-error.mjs
+var _AgentOutputParseError_rawResult;
+
+
+/** Beta: hosted execution completed, but local output parsing failed. */
+class AgentOutputParseError extends error_OpenAIError {
+    constructor(result) {
+        super('The completed agent output could not be parsed');
+        this.name = 'AgentOutputParseError';
+        _AgentOutputParseError_rawResult.set(this, void 0);
+        __classPrivateFieldSet(this, _AgentOutputParseError_rawResult, result, "f");
+    }
+    /** Inspect the completed output explicitly; ordinary error logging omits it. */
+    get raw_result() {
+        return __classPrivateFieldGet(this, _AgentOutputParseError_rawResult, "f");
+    }
+}
+_AgentOutputParseError_rawResult = new WeakMap();
+//# sourceMappingURL=output-parse-error.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/parse-result.mjs
+
+
+
+/** @internal */
+function parseAgentResult(result, format) {
+    try {
+        if (!format) {
+            // SAFETY: Absent formats use the default never/raw overload.
+            return result;
+        }
+        let first;
+        for (const message of result.messages) {
+            for (const content of message.content) {
+                if (content.type === 'output_text') {
+                    const value = format.$parseRaw(content.text);
+                    first ?? (first = { value });
+                }
+            }
+        }
+        if (!first) {
+            throw new AgentOutputParseError(result);
+        }
+        // SAFETY: Callers preserve the format's inferred T.
+        return new ParsedAgentTurnResult(result, first.value);
+    }
+    catch {
+        throw new AgentOutputParseError(result);
+    }
+}
+// Inspect only JSON-visible data fields; leave getters and inherited values to normal serialization.
+function ownJSONValue(object, key) {
+    const descriptor = object && Object.getOwnPropertyDescriptor(object, key);
+    // SAFETY: The own data descriptor corresponds to the requested property in T.
+    return descriptor?.enumerable && 'value' in descriptor ? descriptor.value : undefined;
+}
+/** @internal */
+function agentFormatParser(format) {
+    if (!format) {
+        return undefined;
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(format, '$parseRaw');
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- An own parser data property is the explicit opt-in marker.
+    if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'function') {
+        return undefined;
+    }
+    // SAFETY: Inspect the schema data descriptor without evaluating a caller getter; validate its discriminator below.
+    const schema = ownJSONValue(format, 'schema');
+    if (ownJSONValue(format, 'type') !== 'json_schema' || !schema) {
+        throw new error_OpenAIError('Typed agent formats require own enumerable type and schema data properties');
+    }
+    // SAFETY: The own descriptor was checked for a callable parser; retain its receiver and never reread the property.
+    const parse = descriptor.value;
+    return { type: 'json_schema', schema, $parseRaw: (text) => parse.call(format, text) };
+}
+// Materialize JSON-visible envelope getters once without evaluating unrelated properties.
+function snapshotJSONProperty(object, key, capture = (value) => value) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor?.enumerable) {
+        return object;
+    }
+    const value = capture(object[key]);
+    if ('value' in descriptor && value === descriptor.value) {
+        return object;
+    }
+    // SAFETY: Preserve the original properties/prototype, replacing only this captured property's value.
+    return Object.create(Object.getPrototypeOf(object), {
+        ...Object.getOwnPropertyDescriptors(object),
+        [key]: { value, enumerable: true, configurable: descriptor.configurable, writable: true },
+    });
+}
+/** @internal */
+function captureAgentOutput(input, options) {
+    const body = snapshotJSONProperty(input, 'agent', (agent) => agent
+        ? snapshotJSONProperty(agent, 'text', (text) => (text ? snapshotJSONProperty(text, 'format') : text))
+        : agent);
+    const agent = ownJSONValue(body, 'agent');
+    const text = ownJSONValue(agent, 'text');
+    const format = agentFormatParser(ownJSONValue(text, 'format'));
+    if (!format) {
+        return { body, options };
+    }
+    const schema = structuredClone(format.schema);
+    for (const envelope of [body, agent, text]) {
+        if (envelope && 'toJSON' in envelope) {
+            throw new error_OpenAIError('Typed agent requests cannot customize body, agent, or text serialization');
+        }
+    }
+    // Snapshot options once, matching the own enumerable fields native request spreading uses.
+    const capturedOptions = { ...options };
+    if (ownJSONValue(capturedOptions, 'body') !== undefined) {
+        throw new error_OpenAIError('Typed agent requests cannot override the body in request options');
+    }
+    delete capturedOptions.body;
+    return {
+        options: capturedOptions,
+        body: {
+            ...body,
+            agent: {
+                ...agent,
+                text: { ...text, format: { type: 'json_schema', schema } },
+            },
+        },
+        format,
+    };
+}
+/** @internal */
+async function parseAgentResultPromise(result, format) {
+    return parseAgentResult(await result, format);
+}
+//# sourceMappingURL=parse-result.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/agent-turn-result-error.mjs
+
+/** Beta: final collection failed; partial state is evidence, not a successful result. */
+class AgentTurnResultError extends error_OpenAIError {
+    constructor(reason, session_id, turn, messages, required_actions = [], cause) {
+        super(`Could not collect the agent turn result: ${reason}`);
+        this.name = 'AgentTurnResultError';
+        this.reason = reason;
+        this.session_id = session_id;
+        this.turn = turn;
+        this.messages = messages;
+        this.required_actions = required_actions;
+        this.cause = cause;
+    }
+    get turn_id() {
+        return this.turn?.id;
+    }
+}
+//# sourceMappingURL=agent-turn-result-error.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/agent-turn-result-collector.mjs
+var _AgentTurnResultCollector_instances, _AgentTurnResultCollector_sessionID, _AgentTurnResultCollector_turn, _AgentTurnResultCollector_messages, _AgentTurnResultCollector_requiredActions, _AgentTurnResultCollector_sessionFailed, _AgentTurnResultCollector_terminal, _AgentTurnResultCollector_idle, _AgentTurnResultCollector_acceptTurn, _AgentTurnResultCollector_acceptOutput, _AgentTurnResultCollector_finalMessages;
+
+
+
+/** Accumulates completed items independently of transport and tool execution.
+ * @internal
+ */
+class AgentTurnResultCollector {
+    constructor(sessionID) {
+        _AgentTurnResultCollector_instances.add(this);
+        _AgentTurnResultCollector_sessionID.set(this, void 0);
+        _AgentTurnResultCollector_turn.set(this, void 0);
+        _AgentTurnResultCollector_messages.set(this, new Map());
+        _AgentTurnResultCollector_requiredActions.set(this, []);
+        _AgentTurnResultCollector_sessionFailed.set(this, false);
+        _AgentTurnResultCollector_terminal.set(this, false);
+        _AgentTurnResultCollector_idle.set(this, false);
+        __classPrivateFieldSet(this, _AgentTurnResultCollector_sessionID, sessionID, "f");
+    }
+    accept(event) {
+        if (this.ready) {
+            return;
+        }
+        if ('session' in event) {
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_sessionID, __classPrivateFieldGet(this, _AgentTurnResultCollector_sessionID, "f") ?? event.session.id, "f");
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_requiredActions, structuredClone(event.session.required_actions ?? []), "f");
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_sessionFailed, __classPrivateFieldGet(this, _AgentTurnResultCollector_sessionFailed, "f") || event.type === 'agent.session.failed', "f");
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_idle, __classPrivateFieldGet(this, _AgentTurnResultCollector_idle, "f") || event.type === 'agent.session.idle' && __classPrivateFieldGet(this, _AgentTurnResultCollector_terminal, "f"), "f");
+        }
+        if (event.type === 'agent.session.turn.created' && event.turn.subagent_id === null && !__classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f")) {
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_turn, structuredClone(event.turn), "f");
+            __classPrivateFieldSet(this, _AgentTurnResultCollector_sessionID, event.turn.session_id, "f");
+        }
+        let turnID = 'turn_id' in event ? event.turn_id : undefined;
+        if ('item' in event) {
+            turnID = event.item.turn_id;
+        }
+        if (!__classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f") || turnID !== __classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f").id) {
+            return;
+        }
+        __classPrivateFieldGet(this, _AgentTurnResultCollector_instances, "m", _AgentTurnResultCollector_acceptTurn).call(this, event);
+    }
+    error(reason, cause) {
+        return new AgentTurnResultError(reason, __classPrivateFieldGet(this, _AgentTurnResultCollector_sessionID, "f"), __classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f"), __classPrivateFieldGet(this, _AgentTurnResultCollector_instances, "m", _AgentTurnResultCollector_finalMessages).call(this), __classPrivateFieldGet(this, _AgentTurnResultCollector_requiredActions, "f"), cause);
+    }
+    checkAction(canHandle) {
+        if (__classPrivateFieldGet(this, _AgentTurnResultCollector_sessionFailed, "f") || __classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f")?.status === 'failed') {
+            throw this.error('failed');
+        }
+        if (__classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f")?.status === 'cancelled') {
+            throw this.error('cancelled');
+        }
+        if (__classPrivateFieldGet(this, _AgentTurnResultCollector_requiredActions, "f").some((action) => action.type !== 'function_call' || !canHandle(action.name))) {
+            throw this.error('requires_action');
+        }
+    }
+    get ready() {
+        return __classPrivateFieldGet(this, _AgentTurnResultCollector_terminal, "f") && __classPrivateFieldGet(this, _AgentTurnResultCollector_idle, "f");
+    }
+    release() {
+        __classPrivateFieldGet(this, _AgentTurnResultCollector_messages, "f").clear();
+        __classPrivateFieldSet(this, _AgentTurnResultCollector_requiredActions, [], "f");
+    }
+    finish() {
+        this.checkAction(() => this.ready);
+        if (!__classPrivateFieldGet(this, _AgentTurnResultCollector_terminal, "f") || __classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f")?.status !== 'completed' || !__classPrivateFieldGet(this, _AgentTurnResultCollector_idle, "f")) {
+            throw this.error('observation');
+        }
+        return new AgentTurnResult(__classPrivateFieldGet(this, _AgentTurnResultCollector_turn, "f"), __classPrivateFieldGet(this, _AgentTurnResultCollector_instances, "m", _AgentTurnResultCollector_finalMessages).call(this));
+    }
+}
+_AgentTurnResultCollector_sessionID = new WeakMap(), _AgentTurnResultCollector_turn = new WeakMap(), _AgentTurnResultCollector_messages = new WeakMap(), _AgentTurnResultCollector_requiredActions = new WeakMap(), _AgentTurnResultCollector_sessionFailed = new WeakMap(), _AgentTurnResultCollector_terminal = new WeakMap(), _AgentTurnResultCollector_idle = new WeakMap(), _AgentTurnResultCollector_instances = new WeakSet(), _AgentTurnResultCollector_acceptTurn = function _AgentTurnResultCollector_acceptTurn(event) {
+    if ('turn' in event) {
+        __classPrivateFieldSet(this, _AgentTurnResultCollector_turn, structuredClone(event.turn), "f");
+        __classPrivateFieldSet(this, _AgentTurnResultCollector_terminal, __classPrivateFieldGet(this, _AgentTurnResultCollector_terminal, "f") || (event.type === 'agent.session.turn.completed' ||
+            event.type === 'agent.session.turn.failed' ||
+            event.type === 'agent.session.turn.cancelled'), "f");
+    }
+    __classPrivateFieldGet(this, _AgentTurnResultCollector_instances, "m", _AgentTurnResultCollector_acceptOutput).call(this, event);
+}, _AgentTurnResultCollector_acceptOutput = function _AgentTurnResultCollector_acceptOutput(event) {
+    if (event.type !== 'agent.session.turn.item.done' ||
+        event.item.type !== 'message' ||
+        event.item.status !== 'completed' ||
+        event.item.phase === 'commentary' ||
+        __classPrivateFieldGet(this, _AgentTurnResultCollector_messages, "f").has(event.item.id)) {
+        return;
+    }
+    __classPrivateFieldGet(this, _AgentTurnResultCollector_messages, "f").set(event.item.id, { index: event.output_index, message: structuredClone(event.item) });
+}, _AgentTurnResultCollector_finalMessages = function _AgentTurnResultCollector_finalMessages() {
+    return ([...__classPrivateFieldGet(this, _AgentTurnResultCollector_messages, "f").values()]
+        // oxlint-disable-next-line unicorn/no-array-sort -- Sort a fresh array; ES2020 declarations do not include toSorted.
+        .sort((a, b) => a.index - b.index)
+        .map(({ message }) => message));
+};
+//# sourceMappingURL=agent-turn-result-collector.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/result-collection.mjs
+var _ResultCollection_instances, _ResultCollection_iterator, _ResultCollection_ended, _ResultCollection_enabled, _ResultCollection_uncollectedEvents, _ResultCollection_error, _ResultCollection_result, _ResultCollection_source, _ResultCollection_signal, _ResultCollection_canHandle, _ResultCollection_observe, _ResultCollection_collect;
+
+
+
+
+/** Shares collection between a raw creation stream and the follow-up helper.
+ * @internal
+ */
+class ResultCollection {
+    constructor(source, canHandle = () => false, sessionID, signal) {
+        _ResultCollection_instances.add(this);
+        _ResultCollection_iterator.set(this, void 0);
+        _ResultCollection_ended.set(this, false);
+        _ResultCollection_enabled.set(this, false);
+        _ResultCollection_uncollectedEvents.set(this, false);
+        _ResultCollection_error.set(this, void 0);
+        _ResultCollection_result.set(this, void 0);
+        _ResultCollection_source.set(this, void 0);
+        _ResultCollection_signal.set(this, void 0);
+        _ResultCollection_canHandle.set(this, void 0);
+        __classPrivateFieldSet(this, _ResultCollection_source, source, "f");
+        __classPrivateFieldSet(this, _ResultCollection_signal, signal, "f");
+        __classPrivateFieldSet(this, _ResultCollection_canHandle, canHandle, "f");
+        this.collector = new AgentTurnResultCollector(sessionID);
+    }
+    enable() {
+        if (!__classPrivateFieldGet(this, _ResultCollection_enabled, "f") && __classPrivateFieldGet(this, _ResultCollection_uncollectedEvents, "f")) {
+            throw new error_OpenAIError('Call withResultCollection() before consuming events, or call finalResult() on a fresh stream.');
+        }
+        __classPrivateFieldSet(this, _ResultCollection_enabled, true, "f");
+    }
+    iterate() {
+        if (__classPrivateFieldGet(this, _ResultCollection_iterator, "f")) {
+            throw new error_OpenAIError('An agent result stream can only be consumed once');
+        }
+        return (__classPrivateFieldSet(this, _ResultCollection_iterator, __classPrivateFieldGet(this, _ResultCollection_instances, "m", _ResultCollection_observe).call(this), "f"));
+    }
+    finalResult() {
+        return (__classPrivateFieldSet(this, _ResultCollection_result, __classPrivateFieldGet(this, _ResultCollection_result, "f") ?? __classPrivateFieldGet(this, _ResultCollection_instances, "m", _ResultCollection_collect).call(this), "f"));
+    }
+}
+_ResultCollection_iterator = new WeakMap(), _ResultCollection_ended = new WeakMap(), _ResultCollection_enabled = new WeakMap(), _ResultCollection_uncollectedEvents = new WeakMap(), _ResultCollection_error = new WeakMap(), _ResultCollection_result = new WeakMap(), _ResultCollection_source = new WeakMap(), _ResultCollection_signal = new WeakMap(), _ResultCollection_canHandle = new WeakMap(), _ResultCollection_instances = new WeakSet(), _ResultCollection_observe = async function* _ResultCollection_observe() {
+    const iterator = __classPrivateFieldGet(this, _ResultCollection_source, "f").call(this);
+    let done = false;
+    try {
+        while (true) {
+            // oxlint-disable-next-line no-await-in-loop -- Pull the single-use stream sequentially.
+            const next = await iterator.next();
+            if (next.done) {
+                done = true;
+                return;
+            }
+            if (__classPrivateFieldGet(this, _ResultCollection_enabled, "f")) {
+                this.collector.accept(next.value);
+            }
+            else {
+                __classPrivateFieldSet(this, _ResultCollection_uncollectedEvents, true, "f");
+            }
+            yield next.value;
+        }
+    }
+    catch (error) {
+        if (__classPrivateFieldGet(this, _ResultCollection_enabled, "f")) {
+            __classPrivateFieldSet(this, _ResultCollection_error, error, "f");
+        }
+        throw error;
+    }
+    finally {
+        __classPrivateFieldSet(this, _ResultCollection_ended, true, "f");
+        if (!done) {
+            await iterator.return?.();
+        }
+    }
+}, _ResultCollection_collect = async function _ResultCollection_collect() {
+    this.enable();
+    try {
+        const iterator = __classPrivateFieldGet(this, _ResultCollection_iterator, "f") ?? this.iterate();
+        while (!__classPrivateFieldGet(this, _ResultCollection_ended, "f") && !this.collector.ready) {
+            this.collector.checkAction(__classPrivateFieldGet(this, _ResultCollection_canHandle, "f"));
+            // oxlint-disable-next-line no-await-in-loop -- Each event can dispatch tools before the next pull.
+            const next = await iterator.next();
+            if (next.done) {
+                break;
+            }
+        }
+        if (__classPrivateFieldGet(this, _ResultCollection_error, "f") !== undefined && !this.collector.ready) {
+            throw __classPrivateFieldGet(this, _ResultCollection_error, "f");
+        }
+        if (!this.collector.ready && __classPrivateFieldGet(this, _ResultCollection_signal, "f")?.aborted) {
+            throw this.collector.error('observation', __classPrivateFieldGet(this, _ResultCollection_signal, "f").reason);
+        }
+        return this.collector.finish();
+    }
+    catch (error) {
+        throw error instanceof AgentTurnResultError ? error : this.collector.error('observation', error);
+    }
+    finally {
+        try {
+            await __classPrivateFieldGet(this, _ResultCollection_iterator, "f")?.return();
+        }
+        finally {
+            this.collector.release();
+        }
+    }
+};
+//# sourceMappingURL=result-collection.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/agents/agent-session-stream.mjs
+var _AgentSessionStream_instances, _AgentSessionStream_consumed, _AgentSessionStream_format, _AgentSessionStream_parsedResult, _AgentSessionStream_collection, _AgentSessionStream_stream, _AgentSessionStream_response, _AgentSessionStream_reading, _AgentSessionStream_sessions, _AgentSessionStream_sessionID, _AgentSessionStream_input, _AgentSessionStream_dispatcher, _AgentSessionStream_inputKey, _AgentSessionStream_options, _AgentSessionStream_iterate, _AgentSessionStream_checkAbort, _AgentSessionStream_abortError;
+
+
+
+
+
+
+
+
 async function cancelBody(response) {
     try {
         await response?.body?.cancel();
@@ -12624,13 +15447,16 @@ class AgentSessionStream {
         /** Aborts local requests and iteration without cancelling the backend turn. */
         this.controller = new AbortController();
         _AgentSessionStream_consumed.set(this, false);
+        _AgentSessionStream_format.set(this, void 0);
+        _AgentSessionStream_parsedResult.set(this, void 0);
+        _AgentSessionStream_collection.set(this, void 0);
         _AgentSessionStream_stream.set(this, void 0);
         _AgentSessionStream_response.set(this, void 0);
         _AgentSessionStream_reading.set(this, false);
         _AgentSessionStream_sessions.set(this, void 0);
         _AgentSessionStream_sessionID.set(this, void 0);
         _AgentSessionStream_input.set(this, void 0);
-        _AgentSessionStream_handlers.set(this, void 0);
+        _AgentSessionStream_dispatcher.set(this, void 0);
         _AgentSessionStream_inputKey.set(this, void 0);
         _AgentSessionStream_options.set(this, void 0);
         const input = typeof params.input === 'string'
@@ -12639,10 +15465,13 @@ class AgentSessionStream {
         if (params.input.length === 0) {
             throw new error_OpenAIError('input must not be empty');
         }
+        __classPrivateFieldSet(this, _AgentSessionStream_format, agentFormatParser(params.outputFormat), "f");
+        if (params.outputFormat && !__classPrivateFieldGet(this, _AgentSessionStream_format, "f")) {
+            throw new error_OpenAIError('outputFormat must have its own parser function');
+        }
         __classPrivateFieldSet(this, _AgentSessionStream_sessions, sessions, "f");
         __classPrivateFieldSet(this, _AgentSessionStream_sessionID, sessionID, "f");
         __classPrivateFieldSet(this, _AgentSessionStream_input, { type: 'agent.session.input.message', input }, "f");
-        __classPrivateFieldSet(this, _AgentSessionStream_handlers, new Map(Object.entries(params.toolHandlers ?? {})), "f");
         const headers = buildHeaders([options?.headers]);
         __classPrivateFieldSet(this, _AgentSessionStream_inputKey, headers.nulls.has('idempotency-key')
             ? undefined
@@ -12654,6 +15483,8 @@ class AgentSessionStream {
         headers.nulls.delete('idempotency-key');
         const { idempotencyKey: _key, ...rest } = options ?? {};
         __classPrivateFieldSet(this, _AgentSessionStream_options, { ...rest, headers }, "f");
+        __classPrivateFieldSet(this, _AgentSessionStream_dispatcher, new AgentToolDispatcher(sessions, params.toolHandlers ?? {}, this.controller, __classPrivateFieldGet(this, _AgentSessionStream_options, "f"), params.onToolError), "f");
+        __classPrivateFieldSet(this, _AgentSessionStream_collection, new ResultCollection(() => __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_iterate).call(this), (name) => __classPrivateFieldGet(this, _AgentSessionStream_dispatcher, "f").canHandle(name), sessionID), "f");
     }
     /** Closes local requests without cancelling the turn; an optional reason becomes the abort error's cause. */
     abort(reason) {
@@ -12664,12 +15495,21 @@ class AgentSessionStream {
         }
     }
     /** Starts iteration once; use for await to ensure early exits close the connection. */
-    [(_AgentSessionStream_consumed = new WeakMap(), _AgentSessionStream_stream = new WeakMap(), _AgentSessionStream_response = new WeakMap(), _AgentSessionStream_reading = new WeakMap(), _AgentSessionStream_sessions = new WeakMap(), _AgentSessionStream_sessionID = new WeakMap(), _AgentSessionStream_input = new WeakMap(), _AgentSessionStream_handlers = new WeakMap(), _AgentSessionStream_inputKey = new WeakMap(), _AgentSessionStream_options = new WeakMap(), _AgentSessionStream_instances = new WeakSet(), Symbol.asyncIterator)]() {
+    [(_AgentSessionStream_consumed = new WeakMap(), _AgentSessionStream_format = new WeakMap(), _AgentSessionStream_parsedResult = new WeakMap(), _AgentSessionStream_collection = new WeakMap(), _AgentSessionStream_stream = new WeakMap(), _AgentSessionStream_response = new WeakMap(), _AgentSessionStream_reading = new WeakMap(), _AgentSessionStream_sessions = new WeakMap(), _AgentSessionStream_sessionID = new WeakMap(), _AgentSessionStream_input = new WeakMap(), _AgentSessionStream_dispatcher = new WeakMap(), _AgentSessionStream_inputKey = new WeakMap(), _AgentSessionStream_options = new WeakMap(), _AgentSessionStream_instances = new WeakSet(), Symbol.asyncIterator)]() {
         if (__classPrivateFieldGet(this, _AgentSessionStream_consumed, "f")) {
             throw new error_OpenAIError('An AgentSessionStream can only be consumed once');
         }
         __classPrivateFieldSet(this, _AgentSessionStream_consumed, true, "f");
-        return __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_iterate).call(this);
+        return __classPrivateFieldGet(this, _AgentSessionStream_collection, "f").iterate();
+    }
+    /** Beta: opt into retaining completed final messages before iterating progress events. */
+    withResultCollection() {
+        __classPrivateFieldGet(this, _AgentSessionStream_collection, "f").enable();
+        return this;
+    }
+    /** Beta: drain this turn, dispatch registered tools, and collect its final assistant messages. */
+    finalResult() {
+        return (__classPrivateFieldSet(this, _AgentSessionStream_parsedResult, __classPrivateFieldGet(this, _AgentSessionStream_parsedResult, "f") ?? parseAgentResultPromise(__classPrivateFieldGet(this, _AgentSessionStream_collection, "f").finalResult(), __classPrivateFieldGet(this, _AgentSessionStream_format, "f")), "f"));
     }
 }
 _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
@@ -12694,6 +15534,7 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
         __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
         await __classPrivateFieldGet(this, _AgentSessionStream_sessions, "f").events.create(__classPrivateFieldGet(this, _AgentSessionStream_sessionID, "f"), {
             events: [__classPrivateFieldGet(this, _AgentSessionStream_input, "f")],
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(__classPrivateFieldGet(this, _AgentSessionStream_inputKey, "f") === undefined ? {} : { 'Idempotency-Key': __classPrivateFieldGet(this, _AgentSessionStream_inputKey, "f") }),
         }, {
             ...options,
@@ -12707,10 +15548,7 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
                 continue;
             }
             const terminal = state.terminal(event);
-            const pendingCall = state.call(event);
-            const handler = pendingCall && __classPrivateFieldGet(this, _AgentSessionStream_handlers, "f").get(pendingCall.name);
-            // Freeze dispatch identity and arguments before exposing the original event.
-            const call = pendingCall && handler ? structuredClone(pendingCall) : undefined;
+            const dispatch = __classPrivateFieldGet(this, _AgentSessionStream_dispatcher, "f").prepare(state.call(event), __classPrivateFieldGet(this, _AgentSessionStream_sessionID, "f"));
             if (terminal) {
                 __classPrivateFieldGet(this, _AgentSessionStream_stream, "f").controller.abort();
             }
@@ -12719,12 +15557,7 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
                 return;
             }
             __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-            if (!call || !handler) {
-                continue;
-            }
-            const result = await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_result).call(this, call, handler);
-            __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-            await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_submit).call(this, result, options);
+            await dispatch?.();
         }
         __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
         throw new error_OpenAIError('Session event stream ended before the turn reached idle or failed');
@@ -12733,24 +15566,6 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
         externalSignal?.removeEventListener('abort', abort);
         this.controller.signal.removeEventListener('abort', abort);
         this.abort();
-    }
-}, _AgentSessionStream_result = async function _AgentSessionStream_result(call, handler) {
-    try {
-        const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments) : call.arguments;
-        if (args === null || typeof args !== 'object' || Array.isArray(args)) {
-            throw new error_OpenAIError('Function arguments must be a JSON object');
-        }
-        return toolResult(call, await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_wait).call(this, () => handler(args)));
-    }
-    catch {
-        __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-        return {
-            type: 'agent.session.input.tool_result',
-            turn_id: call.turn_id,
-            call_id: call.call_id,
-            success: false,
-            error: 'Tool handler failed.',
-        };
     }
 }, _AgentSessionStream_checkAbort = function _AgentSessionStream_checkAbort() {
     if (this.controller.signal.aborted) {
@@ -12764,64 +15579,259 @@ _AgentSessionStream_iterate = async function* _AgentSessionStream_iterate() {
         configurable: true,
     });
     return error;
-}, _AgentSessionStream_wait = async function _AgentSessionStream_wait(action) {
-    let onAbort;
-    // oxlint-disable-next-line promise/avoid-new -- Bridge the caller's AbortSignal while a handler or registration delay is pending.
-    const aborted = new Promise((_resolve, reject) => {
-        onAbort = () => reject(__classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_abortError).call(this));
-        this.controller.signal.addEventListener('abort', onAbort, { once: true });
-    });
-    try {
-        __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-        // Capture synchronous throws before racing cancellation, so both promises
-        // always have rejection handlers even if the callback aborts and throws.
-        const invoke = async () => await action();
-        return await Promise.race([invoke(), aborted]);
-    }
-    finally {
-        if (onAbort) {
-            this.controller.signal.removeEventListener('abort', onAbort);
-        }
-    }
-}, _AgentSessionStream_submit = async function _AgentSessionStream_submit(result, options, key = uuid4(), attempt = 0) {
-    __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_checkAbort).call(this);
-    try {
-        await __classPrivateFieldGet(this, _AgentSessionStream_sessions, "f").events.create(__classPrivateFieldGet(this, _AgentSessionStream_sessionID, "f"), { events: [result], 'Idempotency-Key': key }, options);
-    }
-    catch (error) {
-        const delay = [100, 300, 600][attempt];
-        if (delay === undefined ||
-            !(error instanceof BadRequestError) ||
-            error.code !== 'invalid_request_error' ||
-            !error.error ||
-            !('message' in error.error) ||
-            error.error.message !== `Unknown pending tool call: ${result.call_id}`) {
-            throw error;
-        }
-        let timer;
-        try {
-            await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_wait).call(this, () => 
-            // oxlint-disable-next-line promise/avoid-new -- Own the registration timer so cancellation clears it promptly.
-            new Promise((resolve) => {
-                timer = setTimeout(resolve, delay);
-            }));
-        }
-        finally {
-            if (timer !== undefined) {
-                clearTimeout(timer);
-            }
-        }
-        await __classPrivateFieldGet(this, _AgentSessionStream_instances, "m", _AgentSessionStream_submit).call(this, result, options, key, attempt + 1);
-    }
 };
 //# sourceMappingURL=agent-session-stream.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/agent-session-create-stream.mjs
+
+
+
+
+
+
+async function* dispatchCreationTools(source, dispatcher, signal) {
+    const state = new TurnState();
+    let sessionID;
+    for await (const event of { [Symbol.asyncIterator]: source }) {
+        if (event.type === 'agent.session.created') {
+            sessionID ?? (sessionID = event.session.id);
+        }
+        const dispatch = state.accept(event) ? dispatcher.prepare(state.call(event), sessionID) : undefined;
+        yield event;
+        if (signal.aborted) {
+            return;
+        }
+        try {
+            await dispatch?.();
+        }
+        catch (error) {
+            if (signal.aborted && error instanceof APIUserAbortError) {
+                return;
+            }
+            throw error;
+        }
+    }
+}
+/** Add beta result collection without replacing custom stream instances.
+ * @internal
+ */
+function withAgentTurnResult(stream, format, tools) {
+    let collection;
+    stream.__betaTransformIterator((source) => {
+        // A tool result has its own POST endpoint, independent of creation overrides.
+        const { path: _path, method: _method, stream: _stream, ...options } = tools?.options ?? {};
+        const dispatcher = tools && new AgentToolDispatcher(tools.sessions, tools.handlers, stream.controller, options);
+        collection = new ResultCollection(dispatcher ? () => dispatchCreationTools(source, dispatcher, stream.controller.signal) : source, dispatcher ? (name) => dispatcher.canHandle(name) : undefined, undefined, stream.controller.signal);
+        return () => collection.iterate();
+    });
+    let parsed;
+    const result = Object.assign(stream, {
+        finalResult: () => (parsed ?? (parsed = parseAgentResultPromise(collection.finalResult(), format))),
+        withResultCollection: () => {
+            collection.enable();
+            return result;
+        },
+    });
+    return result;
+}
+/** Remove local callbacks without changing ordinary creation requests. @internal */
+function captureCreationTools(body, options) {
+    const descriptor = Object.getOwnPropertyDescriptor(body, 'toolHandlers');
+    if (!descriptor) {
+        return { body, options };
+    }
+    const handlers = body.toolHandlers;
+    if (handlers === undefined && 'value' in descriptor) {
+        return { body, options };
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(body);
+    delete descriptors.toolHandlers;
+    const capturedOptions = { ...options };
+    if ('toJSON' in body || capturedOptions.body !== undefined) {
+        throw new error_OpenAIError('Creation tool handlers cannot customize request body serialization');
+    }
+    if (handlers === undefined) {
+        // SAFETY: Preserve request fields while removing the accessor so serialization cannot evaluate it again.
+        return {
+            body: Object.create(Object.getPrototypeOf(body), descriptors),
+            options: capturedOptions,
+        };
+    }
+    const { stream } = body;
+    if (stream !== true) {
+        throw new error_OpenAIError('toolHandlers requires stream: true');
+    }
+    capturedOptions.headers = buildHeaders([capturedOptions.headers]);
+    descriptors.stream = { value: stream, enumerable: true, configurable: true, writable: true };
+    // SAFETY: Preserve request fields, omitting callbacks and fixing the validated streaming mode.
+    const request = Object.create(Object.getPrototypeOf(body), descriptors);
+    return {
+        body: request,
+        options: capturedOptions,
+        handlers: handlers && Object.fromEntries(Object.entries(handlers)),
+    };
+}
+//# sourceMappingURL=agent-session-create-stream.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/pages.mjs
+
+
+/** Retain server cursor metadata for legacy Agents items with nullable IDs.
+ * @internal
+ * @yields {T} Each item in server order, failing if pagination cannot advance.
+ */
+async function* agentItems(load) {
+    let after;
+    while (true) {
+        // oxlint-disable-next-line no-await-in-loop -- Each page determines the next cursor.
+        const page = await load(after);
+        yield* page.data;
+        if (!page.has_more) {
+            return;
+        }
+        // Internal SDK read: CursorPage keeps raw metadata but does not expose last_id.
+        // oxlint-disable-next-line prefer-destructuring -- Bracket access intentionally reads a protected internal field.
+        const body = page['body'];
+        // oxlint-disable-next-line unicorn/prefer-at -- Keep published source compatible with ES2020 declarations.
+        const last = page.data[page.data.length - 1];
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate only the opaque cursor from response metadata.
+        const cursor = isObj(body) && typeof body['last_id'] === 'string' ? body['last_id'] : last?.id;
+        if (!cursor || cursor === after) {
+            throw new error_OpenAIError('Agent pagination cannot advance to the next page');
+        }
+        after = cursor;
+    }
+}
+//# sourceMappingURL=pages.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/lib/beta/agents/result-artifacts.mjs
+var _AgentResultArtifacts_resource, _AgentResultArtifacts_sessionID, _AgentResultArtifacts_turnID;
+
+
+
+/** Beta: artifacts from the exact session and turn represented by a result. */
+class AgentResultArtifacts {
+    constructor(resource, result) {
+        _AgentResultArtifacts_resource.set(this, void 0);
+        _AgentResultArtifacts_sessionID.set(this, void 0);
+        _AgentResultArtifacts_turnID.set(this, void 0);
+        __classPrivateFieldSet(this, _AgentResultArtifacts_resource, resource, "f");
+        __classPrivateFieldSet(this, _AgentResultArtifacts_sessionID, result.session_id, "f");
+        __classPrivateFieldSet(this, _AgentResultArtifacts_turnID, result.turn_id, "f");
+    }
+    /** Find one immutable artifact by its exact hosted path, across all pages. */
+    async retrieve(path, options) {
+        let selected;
+        for await (const artifact of agentItems((after) => __classPrivateFieldGet(this, _AgentResultArtifacts_resource, "f").list(__classPrivateFieldGet(this, _AgentResultArtifacts_sessionID, "f"), {}, { ...options, query: { ...options?.query, after, environment_id: undefined } }))) {
+            if (artifact.session_id === __classPrivateFieldGet(this, _AgentResultArtifacts_sessionID, "f") &&
+                artifact.turn_id === __classPrivateFieldGet(this, _AgentResultArtifacts_turnID, "f") &&
+                artifact.path === path) {
+                if (selected) {
+                    throw new error_OpenAIError('Multiple artifacts match this result and path');
+                }
+                selected = artifact;
+            }
+        }
+        if (!selected) {
+            throw new error_OpenAIError('No artifact matches this result and path');
+        }
+        return selected;
+    }
+    /** Return the native binary response for this result's exact artifact path. */
+    async content(path, options) {
+        const artifact = await this.retrieve(path, options);
+        return __classPrivateFieldGet(this, _AgentResultArtifacts_resource, "f").content(artifact.id, { session_id: __classPrivateFieldGet(this, _AgentResultArtifacts_sessionID, "f") }, options);
+    }
+    /** Stream bytes to a caller-chosen destination; the hosted path never selects a local path. */
+    async download(params, options) {
+        const { path, to } = params;
+        const artifact = await this.retrieve(path, options);
+        const response = await __classPrivateFieldGet(this, _AgentResultArtifacts_resource, "f").content(artifact.id, { session_id: __classPrivateFieldGet(this, _AgentResultArtifacts_sessionID, "f") }, options);
+        if (!response.body) {
+            throw new error_OpenAIError('Artifact response has no content stream');
+        }
+        try {
+            await response.body.pipeTo(to, options?.signal ? { signal: options.signal } : {});
+        }
+        catch (error) {
+            // pipeTo can reject before acquiring a reader, for example when the destination is locked.
+            try {
+                await response.body.cancel();
+            }
+            catch {
+                /* already cancelled or owned by pipeTo */
+            }
+            throw error;
+        }
+        return artifact;
+    }
+}
+_AgentResultArtifacts_resource = new WeakMap(), _AgentResultArtifacts_sessionID = new WeakMap(), _AgentResultArtifacts_turnID = new WeakMap();
+//# sourceMappingURL=result-artifacts.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/artifacts.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
 
+
+function artifacts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const artifacts_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function artifacts_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => artifacts_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !artifacts_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Artifacts extends APIResource {
+    /** Beta: bind artifact lookup and downloads to a completed result's exact session and turn. */
+    forResult(result) {
+        return new AgentResultArtifacts(this, result);
+    }
     /**
      * Retrieves immutable metadata for one durable session artifact. See
      * [session artifacts](https://developers.openai.com/api/docs/guides/agents-api/environments/files#openai-hosted-artifacts).
@@ -12837,33 +15847,25 @@ class Artifacts extends APIResource {
      */
     retrieve(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, {
+        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, artifacts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists immutable artifacts published by completed hosted session turns. See
-     * [session artifacts](https://developers.openai.com/api/docs/guides/agents-api/environments/files#openai-hosted-artifacts).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const sessionArtifact of client.beta.agents.sessions.artifacts.list(
-     *   'session_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(sessionID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/artifacts`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = artifacts_normalizeRequestOptionsForQuery(query, ['after', 'environment_id', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/artifacts`, (CursorPage), artifacts_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes an immutable session artifact without deleting its live environment file
@@ -12881,11 +15883,11 @@ class Artifacts extends APIResource {
      */
     delete(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.delete(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, {
+        return this._client.delete(path `/agents/sessions/${session_id}/artifacts/${artifactID}`, artifacts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Downloads immutable session artifact bytes after the execution environment
@@ -12906,7 +15908,7 @@ class Artifacts extends APIResource {
      */
     content(artifactID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}/content`, {
+        return this._client.get(path `/agents/sessions/${session_id}/artifacts/${artifactID}/content`, artifacts_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 { 'OpenAI-Beta': 'agents=v1', Accept: 'application/octet-stream' },
@@ -12914,7 +15916,7 @@ class Artifacts extends APIResource {
             ]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
 }
 //# sourceMappingURL=artifacts.mjs.map
@@ -12923,9 +15925,16 @@ class Artifacts extends APIResource {
 
 
 
+function events_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Events extends APIResource {
     /**
-     * Submits message, cancellation, or tool-result events to a managed agent session.
+     * Submits message, cancellation, tool-result, or computer-use approval-response
+     * events to a managed agent session. Cancellation can recover a still-open turn
+     * whose backend execution has ended by marking it cancelled and abandoning
+     * unpublished outputs. Saved results, published files, and existing terminal
+     * outcomes are preserved. HTTP 202 confirms acceptance, not durable completion.
      * See
      * [session events](https://developers.openai.com/api/docs/guides/agents-api/sessions/events).
      *
@@ -12936,13 +15945,16 @@ class Events extends APIResource {
      *   {
      *     events: [
      *       {
-     *         input: [
-     *           {
-     *             content: [{ text: 'text', type: 'input_text' }],
-     *             role: 'user',
-     *           },
-     *         ],
-     *         type: 'agent.session.input.message',
+     *         request_id: 'request_id',
+     *         response: {
+     *           action: 'submit',
+     *           fields: [
+     *             { field_id: 'field_id', value: 'value' },
+     *           ],
+     *           type: 'browser_authentication',
+     *         },
+     *         type:
+     *           'agent.session.input.computer_use_approval_request_result',
      *       },
      *     ],
      *   },
@@ -12951,7 +15963,7 @@ class Events extends APIResource {
      */
     create(sessionID, params, options) {
         const { 'Idempotency-Key': idempotencyKey, ...body } = params;
-        return this._client.post(path `/agents/sessions/${sessionID}/events`, {
+        return this._client.post(path `/agents/sessions/${sessionID}/events`, events_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -12963,7 +15975,7 @@ class Events extends APIResource {
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Streams live events for an agent session. See
@@ -12978,12 +15990,15 @@ class Events extends APIResource {
      * ```
      */
     stream(sessionID, options) {
-        return this._client.get(path `/agents/sessions/${sessionID}/events`, {
+        return this._client.get(path `/agents/sessions/${sessionID}/events`, events_resolveResourceRequestOptions(options, (options) => ({
             ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1', Accept: 'text/event-stream' }, options?.headers]),
+            headers: buildHeaders([
+                { 'OpenAI-Beta': 'agents=v1', Accept: 'text/event-stream' },
+                options?.headers,
+            ]),
             stream: true,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=events.mjs.map
@@ -12993,92 +16008,165 @@ class Events extends APIResource {
 
 
 
+function items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const items_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function items_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => items_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !items_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Items extends APIResource {
-    /**
-     * Lists items produced by the session's root agent, including its interactions
-     * with subagents. Each subagent has its own item history. See
-     * [inspecting agent output](https://developers.openai.com/api/docs/guides/agents-api/observability).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const agentSessionItem of client.beta.agents.sessions.items.list(
-     *   'session_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(sessionID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/items`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = items_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/items`, (CursorPage), items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=items.mjs.map
-;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/turns.mjs
+;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/traces.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
 
-class Turns extends APIResource {
-    /**
-     * Retrieves a turn's current status, timestamps, usage, and error. Returns 404 if
-     * the turn does not belong to the session. See
-     * [session turns](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage#inspect-session-turns).
-     *
-     * @example
-     * ```ts
-     * const turn =
-     *   await client.beta.agents.sessions.turns.retrieve(
-     *     'turn_id',
-     *     { session_id: 'session_id' },
-     *   );
-     * ```
-     */
-    retrieve(turnID, params, options) {
-        const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/turns/${turnID}`, {
-            ...options,
-            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            __security: { bearerAuth: true },
-        });
+function traces_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const traces_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function traces_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => traces_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !traces_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
     }
-    /**
-     * Lists turns by creation time and turn ID. The after cursor is exclusive in the
-     * selected order. See
-     * [session turns](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage#inspect-session-turns).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const turn of client.beta.agents.sessions.turns.list(
-     *   'session_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+class Traces extends APIResource {
     list(sessionID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/turns`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = traces_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/traces`, (CursorPage), traces_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
-//# sourceMappingURL=turns.mjs.map
+//# sourceMappingURL=traces.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/subagents/items.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
 
 
+function subagents_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class items_Items extends APIResource {
     /**
      * Lists this subagent's own items across all of its turns. See
@@ -13097,12 +16185,12 @@ class items_Items extends APIResource {
      */
     list(subagentID, params, options) {
         const { session_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/items`, (CursorPage), {
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/items`, (CursorPage), subagents_items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=items.mjs.map
@@ -13112,6 +16200,9 @@ class items_Items extends APIResource {
 
 
 
+function turns_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class turns_items_Items extends APIResource {
     /**
      * Lists items belonging to one turn of this subagent. See
@@ -13130,12 +16221,12 @@ class turns_items_Items extends APIResource {
      */
     list(turnID, params, options) {
         const { session_id, subagent_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}/items`, (CursorPage), {
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}/items`, (CursorPage), turns_items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=items.mjs.map
@@ -13147,7 +16238,10 @@ class turns_items_Items extends APIResource {
 
 
 
-class turns_Turns extends APIResource {
+function turns_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class Turns extends APIResource {
     constructor() {
         super(...arguments);
         this.items = new turns_items_Items(this._client);
@@ -13170,11 +16264,11 @@ class turns_Turns extends APIResource {
      */
     retrieve(turnID, params, options) {
         const { session_id, subagent_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}`, {
+        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagent_id}/turns/${turnID}`, turns_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Lists all turns of this subagent, including turns after a resume. See
@@ -13193,15 +16287,15 @@ class turns_Turns extends APIResource {
      */
     list(subagentID, params, options) {
         const { session_id, ...query } = params;
-        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/turns`, (CursorPage), {
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/subagents/${subagentID}/turns`, (CursorPage), turns_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
-turns_Turns.Items = turns_items_Items;
+Turns.Items = turns_items_Items;
 //# sourceMappingURL=turns.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/subagents/subagents.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
@@ -13213,11 +16307,66 @@ turns_Turns.Items = turns_items_Items;
 
 
 
+function subagents_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const subagents_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function subagents_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => subagents_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !subagents_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Subagents extends APIResource {
     constructor() {
         super(...arguments);
         this.items = new items_Items(this._client);
-        this.turns = new turns_Turns(this._client);
+        this.turns = new Turns(this._client);
     }
     /**
      * Retrieves a subagent belonging to this session. See
@@ -13234,38 +16383,174 @@ class Subagents extends APIResource {
      */
     retrieve(subagentID, params, options) {
         const { session_id } = params;
-        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagentID}`, {
+        return this._client.get(path `/agents/sessions/${session_id}/subagents/${subagentID}`, subagents_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
+    list(sessionID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = subagents_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/subagents`, (CursorPage), subagents_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+Subagents.Items = items_Items;
+Subagents.Turns = Turns;
+//# sourceMappingURL=subagents.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/turns/items.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+
+
+function sessions_turns_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class sessions_turns_items_Items extends APIResource {
     /**
-     * Lists subagents in a session, including nested and closed subagents. See
-     * [subagent workflows](https://developers.openai.com/api/docs/guides/agents-api/multi-agent).
+     * Lists items belonging to one root-agent turn, including its interactions with
+     * subagents. See
+     * [inspecting agent output](https://developers.openai.com/api/docs/guides/agents-api/observability).
      *
      * @example
      * ```ts
      * // Automatically fetches more pages as needed.
-     * for await (const subagent of client.beta.agents.sessions.subagents.list(
-     *   'session_id',
+     * for await (const agentSessionItem of client.beta.agents.sessions.turns.items.list(
+     *   'turn_id',
+     *   { session_id: 'session_id' },
      * )) {
      *   // ...
      * }
      * ```
      */
-    list(sessionID, query = {}, options) {
-        return this._client.getAPIList(path `/agents/sessions/${sessionID}/subagents`, (CursorPage), {
+    list(turnID, params, options) {
+        const { session_id, ...query } = params;
+        return this._client.getAPIList(path `/agents/sessions/${session_id}/turns/${turnID}/items`, (ConversationCursorPage), sessions_turns_items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
-Subagents.Items = items_Items;
-Subagents.Turns = turns_Turns;
-//# sourceMappingURL=subagents.mjs.map
+//# sourceMappingURL=items.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/turns/turns.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+
+
+
+
+function turns_turns_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const turns_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function turns_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => turns_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !turns_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+class turns_Turns extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.items = new sessions_turns_items_Items(this._client);
+    }
+    /**
+     * Retrieves a turn's current status, timestamps, usage, and error. Returns 404 if
+     * the turn does not belong to the session. See
+     * [session turns](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage#inspect-session-turns).
+     *
+     * @example
+     * ```ts
+     * const turn =
+     *   await client.beta.agents.sessions.turns.retrieve(
+     *     'turn_id',
+     *     { session_id: 'session_id' },
+     *   );
+     * ```
+     */
+    retrieve(turnID, params, options) {
+        const { session_id } = params;
+        return this._client.get(path `/agents/sessions/${session_id}/turns/${turnID}`, turns_turns_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+    list(sessionID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = turns_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/agents/sessions/${sessionID}/turns`, (CursorPage), turns_turns_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+turns_Turns.Items = sessions_turns_items_Items;
+//# sourceMappingURL=turns.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/sessions/sessions.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
@@ -13283,6 +16568,65 @@ Subagents.Turns = turns_Turns;
 
 
 
+
+
+
+
+function sessions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const sessions_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function sessions_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => sessions_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !sessions_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class sessions_Sessions extends APIResource {
     constructor() {
         super(...arguments);
@@ -13290,20 +16634,31 @@ class sessions_Sessions extends APIResource {
         this.artifacts = new Artifacts(this._client);
         this.items = new Items(this._client);
         this.events = new Events(this._client);
-        this.turns = new Turns(this._client);
+        this.traces = new Traces(this._client);
+        this.turns = new turns_Turns(this._client);
     }
     /** Stream one turn on an idle session with a single input writer. See AgentSessionStream for lifecycle and tool handling. */
     stream(sessionID, params, options) {
         return new AgentSessionStream(this, sessionID, params, options);
     }
     create(body, options) {
-        return this._client.post('/agents/sessions', {
-            body,
+        const creation = captureCreationTools(body, options);
+        const output = captureAgentOutput(creation.body, creation.options);
+        return this._client
+            .post('/agents/sessions', sessions_resolveResourceRequestOptions(output.options, (options) => ({
+            body: output.body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
-            stream: body.stream ?? false,
+            stream: output.body.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })))
+            ._thenUnwrap((data, { options }) => 
+        // SAFETY: defaultParseResponse uses this same resolved flag to return the configured stream instance.
+        options.stream
+            ? withAgentTurnResult(data, output.format, creation.handlers
+                ? { sessions: this, handlers: creation.handlers, options: output.options }
+                : undefined)
+            : data);
     }
     /**
      * Retrieves the current state of a managed agent session. See
@@ -13316,14 +16671,15 @@ class sessions_Sessions extends APIResource {
      * ```
      */
     retrieve(sessionID, options) {
-        return this._client.get(path `/agents/sessions/${sessionID}`, {
+        return this._client.get(path `/agents/sessions/${sessionID}`, sessions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
-     * Updates session metadata. Omitted fields are unchanged. See
+     * Updates session metadata, model, reasoning effort, or service tier. Model
+     * settings apply to subsequent turns. Omitted fields are unchanged. See
      * [managing sessions](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage).
      *
      * @example
@@ -13333,37 +16689,32 @@ class sessions_Sessions extends APIResource {
      * ```
      */
     update(sessionID, body = {}, options) {
-        return this._client.post(path `/agents/sessions/${sessionID}`, {
+        return this._client.post(path `/agents/sessions/${sessionID}`, sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists managed agent sessions using ID-based pagination and the requested sort
-     * order. See
-     * [managing sessions](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const agentSession of client.beta.agents.sessions.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/agents/sessions', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = sessions_normalizeRequestOptionsForQuery(query, ['after', 'agent_id', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents/sessions', (CursorPage), sessions_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Removes a managed agent session from the public API and returns a deletion
-     * confirmation. Physical cleanup may continue asynchronously. See
+     * confirmation. If backend execution has ended, deletion can cancel a still-open
+     * public turn and abandon unpublished outputs. Running execution must be cancelled
+     * first. Physical cleanup may continue asynchronously. See
      * [managing sessions](https://developers.openai.com/api/docs/guides/agents-api/sessions/manage).
      *
      * @example
@@ -13373,18 +16724,19 @@ class sessions_Sessions extends APIResource {
      * ```
      */
     delete(sessionID, options) {
-        return this._client.delete(path `/agents/sessions/${sessionID}`, {
+        return this._client.delete(path `/agents/sessions/${sessionID}`, sessions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 sessions_Sessions.Subagents = Subagents;
 sessions_Sessions.Artifacts = Artifacts;
 sessions_Sessions.Items = Items;
 sessions_Sessions.Events = Events;
-sessions_Sessions.Turns = Turns;
+sessions_Sessions.Traces = Traces;
+sessions_Sessions.Turns = turns_Turns;
 //# sourceMappingURL=sessions.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/beta/agents/vaults/credentials.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
@@ -13392,6 +16744,61 @@ sessions_Sessions.Turns = Turns;
 
 
 
+function credentials_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const credentials_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function credentials_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => credentials_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !credentials_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Credentials extends APIResource {
     /**
      * Creates a vault credential. Secret values are write-only and are never returned.
@@ -13415,12 +16822,12 @@ class Credentials extends APIResource {
      * ```
      */
     create(vaultID, body, options) {
-        return this._client.post(path `/vaults/${vaultID}/credentials`, {
+        return this._client.post(path `/vaults/${vaultID}/credentials`, credentials_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves vault credential metadata without returning secret values. See
@@ -13437,15 +16844,14 @@ class Credentials extends APIResource {
      */
     retrieve(credentialID, params, options) {
         const { vault_id } = params;
-        return this._client.get(path `/vaults/${vault_id}/credentials/${credentialID}`, {
+        return this._client.get(path `/vaults/${vault_id}/credentials/${credentialID}`, credentials_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
-     * Rotates a vault credential's write-only secret and returns only credential
-     * metadata. See
+     * Updates credential metadata or rotates its write-only secret. See
      * [vaults](https://developers.openai.com/api/docs/guides/agents-api/tools/vaults).
      *
      * @example
@@ -13453,44 +16859,32 @@ class Credentials extends APIResource {
      * const credential =
      *   await client.beta.agents.vaults.credentials.update(
      *     'credential_id',
-     *     {
-     *       vault_id: 'vault_id',
-     *       auth: { type: 'mcp_oauth' },
-     *     },
+     *     { vault_id: 'vault_id', metadata: {} },
      *   );
      * ```
      */
     update(credentialID, params, options) {
         const { vault_id, ...body } = params;
-        return this._client.post(path `/vaults/${vault_id}/credentials/${credentialID}`, {
+        return this._client.post(path `/vaults/${vault_id}/credentials/${credentialID}`, credentials_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists a vault's credentials using ID-based pagination without returning secret
-     * values. See
-     * [vaults](https://developers.openai.com/api/docs/guides/agents-api/tools/vaults).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const credential of client.beta.agents.vaults.credentials.list(
-     *   'vault_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(vaultID, query = {}, options) {
-        return this._client.getAPIList(path `/vaults/${vaultID}/credentials`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = credentials_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'status'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/vaults/${vaultID}/credentials`, (CursorPage), credentials_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a vault credential. See
@@ -13507,11 +16901,11 @@ class Credentials extends APIResource {
      */
     delete(credentialID, params, options) {
         const { vault_id } = params;
-        return this._client.delete(path `/vaults/${vault_id}/credentials/${credentialID}`, {
+        return this._client.delete(path `/vaults/${vault_id}/credentials/${credentialID}`, credentials_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=credentials.mjs.map
@@ -13523,6 +16917,61 @@ class Credentials extends APIResource {
 
 
 
+function vaults_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const vaults_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function vaults_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => vaults_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !vaults_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Vaults extends APIResource {
     constructor() {
         super(...arguments);
@@ -13538,12 +16987,12 @@ class Vaults extends APIResource {
      * ```
      */
     create(body = {}, options) {
-        return this._client.post('/vaults', {
+        return this._client.post('/vaults', vaults_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a vault by its ID. See
@@ -13557,31 +17006,25 @@ class Vaults extends APIResource {
      * ```
      */
     retrieve(vaultID, options) {
-        return this._client.get(path `/vaults/${vaultID}`, {
+        return this._client.get(path `/vaults/${vaultID}`, vaults_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists vaults using ID-based pagination. See
-     * [vaults](https://developers.openai.com/api/docs/guides/agents-api/tools/vaults).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const vault of client.beta.agents.vaults.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/vaults', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = vaults_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'status'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/vaults', (CursorPage), vaults_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a vault and all its credentials. See
@@ -13595,11 +17038,11 @@ class Vaults extends APIResource {
      * ```
      */
     delete(vaultID, options) {
-        return this._client.delete(path `/vaults/${vaultID}`, {
+        return this._client.delete(path `/vaults/${vaultID}`, vaults_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 Vaults.Credentials = Credentials;
@@ -13616,6 +17059,61 @@ Vaults.Credentials = Credentials;
 
 
 
+function agents_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const agents_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function agents_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => agents_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !agents_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Agents extends APIResource {
     constructor() {
         super(...arguments);
@@ -13635,12 +17133,12 @@ class Agents extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/agents', {
+        return this._client.post('/agents', agents_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a reusable agent by ID. See
@@ -13652,11 +17150,11 @@ class Agents extends APIResource {
      * ```
      */
     retrieve(agentID, options) {
-        return this._client.get(path `/agents/${agentID}`, {
+        return this._client.get(path `/agents/${agentID}`, agents_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Updates a reusable agent. See
@@ -13668,32 +17166,26 @@ class Agents extends APIResource {
      * ```
      */
     update(agentID, body = {}, options) {
-        return this._client.post(path `/agents/${agentID}`, {
+        return this._client.post(path `/agents/${agentID}`, agents_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Lists reusable agents in the current project. See
-     * [agent configuration](https://developers.openai.com/api/docs/guides/agents-api/configuration).
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const agent of client.beta.agents.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/agents', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = agents_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/agents', (CursorPage), agents_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a reusable agent. See
@@ -13707,11 +17199,11 @@ class Agents extends APIResource {
      * ```
      */
     delete(agentID, options) {
-        return this._client.delete(path `/agents/${agentID}`, {
+        return this._client.delete(path `/agents/${agentID}`, agents_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'agents=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 Agents.Environments = Environments;
@@ -13723,6 +17215,9 @@ Agents.Sessions = sessions_Sessions;
 
 
 
+function chatkit_sessions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class chatkit_sessions_Sessions extends APIResource {
     /**
      * Create a ChatKit session.
@@ -13737,12 +17232,12 @@ class chatkit_sessions_Sessions extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/chatkit/sessions', {
+        return this._client.post('/chatkit/sessions', chatkit_sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Cancel an active ChatKit session and return its most recent metadata.
@@ -13756,11 +17251,11 @@ class chatkit_sessions_Sessions extends APIResource {
      * ```
      */
     cancel(sessionID, options) {
-        return this._client.post(path `/chatkit/sessions/${sessionID}/cancel`, {
+        return this._client.post(path `/chatkit/sessions/${sessionID}/cancel`, chatkit_sessions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=sessions.mjs.map
@@ -13770,6 +17265,61 @@ class chatkit_sessions_Sessions extends APIResource {
 
 
 
+function threads_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const threads_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function threads_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => threads_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !threads_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Threads extends APIResource {
     /**
      * Retrieve a ChatKit thread by its identifier.
@@ -13781,30 +17331,25 @@ class Threads extends APIResource {
      * ```
      */
     retrieve(threadID, options) {
-        return this._client.get(path `/chatkit/threads/${threadID}`, {
+        return this._client.get(path `/chatkit/threads/${threadID}`, threads_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * List ChatKit threads with optional pagination and user filters.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const chatkitThread of client.beta.chatkit.threads.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/chatkit/threads', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = threads_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order', 'user'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/chatkit/threads', (ConversationCursorPage), threads_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a ChatKit thread along with its items and stored attachments.
@@ -13817,32 +17362,25 @@ class Threads extends APIResource {
      * ```
      */
     delete(threadID, options) {
-        return this._client.delete(path `/chatkit/threads/${threadID}`, {
+        return this._client.delete(path `/chatkit/threads/${threadID}`, threads_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * List items that belong to a ChatKit thread.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const thread of client.beta.chatkit.threads.listItems(
-     *   'cthr_123',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     listItems(threadID, query = {}, options) {
-        return this._client.getAPIList(path `/chatkit/threads/${threadID}/items`, (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = threads_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/chatkit/threads/${threadID}/items`, (ConversationCursorPage), threads_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'chatkit_beta=v1' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=threads.mjs.map
@@ -13869,23 +17407,74 @@ ChatKit.Threads = Threads;
 
 
 
+function input_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const input_items_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function input_items_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => input_items_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !input_items_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+/**
+ * Create and manage model responses.
+ */
 class InputItems extends APIResource {
-    /**
-     * Returns a list of input items for a given response.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const betaResponseItem of client.beta.responses.inputItems.list(
-     *   'response_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(responseID, params = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = input_items_normalizeRequestOptionsForQuery(params, ['after', 'betas', 'include', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            params = {};
+        }
+        params = params;
         const { betas, ...query } = params ?? {};
-        return this._client.getAPIList(path `/responses/${responseID}/input_items?beta=true`, (CursorPage), {
+        return this._client.getAPIList(path `/responses/${responseID}/input_items?beta=true`, (CursorPage), input_items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([
@@ -13893,7 +17482,7 @@ class InputItems extends APIResource {
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=input-items.mjs.map
@@ -13901,6 +17490,12 @@ class InputItems extends APIResource {
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function input_tokens_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Create and manage model responses.
+ */
 class InputTokens extends APIResource {
     /**
      * Returns input token counts of the request.
@@ -13916,7 +17511,7 @@ class InputTokens extends APIResource {
      */
     count(params = {}, options) {
         const { betas, ...body } = params ?? {};
-        return this._client.post('/responses/input_tokens?beta=true', {
+        return this._client.post('/responses/input_tokens?beta=true', input_tokens_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -13924,7 +17519,7 @@ class InputTokens extends APIResource {
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=input-tokens.mjs.map
@@ -13937,6 +17532,64 @@ class InputTokens extends APIResource {
 
 
 
+function responses_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const responses_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function responses_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => responses_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !responses_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+/**
+ * Create and manage model responses.
+ */
 class Responses extends APIResource {
     constructor() {
         super(...arguments);
@@ -13945,7 +17598,7 @@ class Responses extends APIResource {
     }
     create(params, options) {
         const { betas, ...body } = params;
-        return this._client.post('/responses?beta=true', {
+        return this._client.post('/responses?beta=true', responses_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -13954,11 +17607,17 @@ class Responses extends APIResource {
             ]),
             stream: params.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     retrieve(responseID, params = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = responses_normalizeRequestOptionsForQuery(params, ['betas', 'include', 'include_obfuscation', 'starting_after', 'stream'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            params = {};
+        }
+        params = params;
         const { betas, ...query } = params ?? {};
-        return this._client.get(path `/responses/${responseID}?beta=true`, {
+        return this._client.get(path `/responses/${responseID}?beta=true`, responses_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([
@@ -13967,7 +17626,7 @@ class Responses extends APIResource {
             ]),
             stream: params?.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a model response with the given ID.
@@ -13981,14 +17640,17 @@ class Responses extends APIResource {
      */
     delete(responseID, params = {}, options) {
         const { betas } = params ?? {};
-        return this._client.delete(path `/responses/${responseID}?beta=true`, {
+        return this._client.delete(path `/responses/${responseID}?beta=true`, responses_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([
-                { Accept: '*/*', ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
+                {
+                    Accept: '*/*',
+                    ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined),
+                },
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Cancels a model response with the given ID. Only responses created with the
@@ -14004,14 +17666,14 @@ class Responses extends APIResource {
      */
     cancel(responseID, params = {}, options) {
         const { betas } = params ?? {};
-        return this._client.post(path `/responses/${responseID}/cancel?beta=true`, {
+        return this._client.post(path `/responses/${responseID}/cancel?beta=true`, responses_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([
                 { ...(betas?.toString() != null ? { 'openai-beta': betas?.toString() } : undefined) },
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Compact a conversation. Returns a compacted response object.
@@ -14031,7 +17693,7 @@ class Responses extends APIResource {
      */
     compact(params, options) {
         const { betas, ...body } = params;
-        return this._client.post('/responses/compact?beta=true', {
+        return this._client.post('/responses/compact?beta=true', responses_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([
@@ -14039,7 +17701,7 @@ class Responses extends APIResource {
                 options?.headers,
             ]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 Responses.InputItems = InputItems;
@@ -14051,6 +17713,61 @@ Responses.InputTokens = InputTokens;
 
 
 
+function messages_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const messages_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function messages_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => messages_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !messages_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Build Assistants that can call models and use tools.
  *
@@ -14063,12 +17780,12 @@ class messages_Messages extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     create(threadID, body, options) {
-        return this._client.post(path `/threads/${threadID}/messages`, {
+        return this._client.post(path `/threads/${threadID}/messages`, messages_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieve a message.
@@ -14077,11 +17794,11 @@ class messages_Messages extends APIResource {
      */
     retrieve(messageID, params, options) {
         const { thread_id } = params;
-        return this._client.get(path `/threads/${thread_id}/messages/${messageID}`, {
+        return this._client.get(path `/threads/${thread_id}/messages/${messageID}`, messages_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a message.
@@ -14090,25 +17807,26 @@ class messages_Messages extends APIResource {
      */
     update(messageID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/messages/${messageID}`, {
+        return this._client.post(path `/threads/${thread_id}/messages/${messageID}`, messages_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of messages for a given thread.
-     *
-     * @deprecated The Assistants API is deprecated in favor of the Responses API
-     */
     list(threadID, query = {}, options) {
-        return this._client.getAPIList(path `/threads/${threadID}/messages`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = messages_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order', 'run_id'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/threads/${threadID}/messages`, (CursorPage), messages_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Deletes a message.
@@ -14117,11 +17835,11 @@ class messages_Messages extends APIResource {
      */
     delete(messageID, params, options) {
         const { thread_id } = params;
-        return this._client.delete(path `/threads/${thread_id}/messages/${messageID}`, {
+        return this._client.delete(path `/threads/${thread_id}/messages/${messageID}`, messages_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=messages.mjs.map
@@ -14131,6 +17849,9 @@ class messages_Messages extends APIResource {
 
 
 
+function steps_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Build Assistants that can call models and use tools.
  *
@@ -14144,12 +17865,12 @@ class Steps extends APIResource {
      */
     retrieve(stepID, params, options) {
         const { thread_id, run_id, ...query } = params;
-        return this._client.get(path `/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, {
+        return this._client.get(path `/threads/${thread_id}/runs/${run_id}/steps/${stepID}`, steps_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Returns a list of run steps belonging to a run.
@@ -14158,12 +17879,12 @@ class Steps extends APIResource {
      */
     list(runID, params, options) {
         const { thread_id, ...query } = params;
-        return this._client.getAPIList(path `/threads/${thread_id}/runs/${runID}/steps`, (CursorPage), {
+        return this._client.getAPIList(path `/threads/${thread_id}/runs/${runID}/steps`, (CursorPage), steps_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=steps.mjs.map
@@ -14334,6 +18055,7 @@ function getAssistantStreamDeltaIndex(deltaEntry, kind, baselineLength) {
     if (kind === 'array' && typeof index !== 'number') {
         throw new TypeError('Expected array delta entry `index` property to be a number but got an invalid value');
     }
+    // SAFETY: Number.isSafeInteger rejects non-numbers before numeric comparisons; the remaining checks enforce the permitted index range.
     if (!Number.isSafeInteger(index) ||
         index < 0 ||
         index >= baselineLength + MAX_ASSISTANT_STREAM_ARRAY_GROWTH ||
@@ -14341,6 +18063,7 @@ function getAssistantStreamDeltaIndex(deltaEntry, kind, baselineLength) {
         const safeIndex = typeof index === 'number' ? index : 'unknown';
         throw new error_OpenAIError(`Assistant stream delta contains an invalid ${kind} index: ${safeIndex}`);
     }
+    // SAFETY: Number.isSafeInteger rejects non-numbers before numeric comparisons; the remaining checks enforce the permitted index range.
     return index;
 }
 function assertValidAssistantStreamArrayDelta(accumulator, delta, kind, projection, validateRecord) {
@@ -14478,6 +18201,7 @@ function applyAssistantStreamArrayDelta(accumulator, delta, applyRecord) {
                 accumulator[index] = deltaEntry;
             }
             else {
+                // SAFETY: The preceding validation accepts this accumulated record before recursively merging the matching delta entry.
                 accumulator[index] = applyRecord(accumulatedEntry, deltaEntry);
             }
         }
@@ -14542,9 +18266,13 @@ function assertSafeAssistantStreamDelta(value) {
         assertSafeAssistantStreamDelta(nestedValue);
     }
 }
-function accumulateAssistantStreamDelta(accumulator, delta, cacheArrays = false) {
+function accumulateAssistantStreamDelta(accumulator, 
+// oxlint-disable-next-line anti-slop/no-object-parameters -- This exported accumulator accepts heterogeneous partial SDK deltas and validates their properties at runtime.
+delta, cacheArrays = false) {
     assertSafeAssistantStreamDelta(delta);
+    // SAFETY: The generic accumulator uses record entries after delta validation; recursive merge retains the original accumulator's public type.
     const accumulatorRecord = accumulator;
+    // SAFETY: The generic accumulator uses record entries after delta validation; recursive merge retains the original accumulator's public type.
     const deltaRecord = delta;
     const projection = createAssistantStreamDeltaProjection(cacheArrays && !isAssistantStreamValueExternallyMutable(accumulator));
     assertValidAssistantStreamDeltaIndices(accumulatorRecord, deltaRecord, projection);
@@ -14570,7 +18298,9 @@ var _AssistantStream_instances, _AssistantStream_runStepSnapshots, _AssistantStr
 function stabilizeAssistantStreamEvent(event) {
     const eventDescriptor = Object.getOwnPropertyDescriptor(event, 'event');
     const dataDescriptor = Object.getOwnPropertyDescriptor(event, 'data');
+    // oxlint-disable-next-line anti-slop/no-reflect-get -- Reflective wire reads reject primitive frames and preserve the original event receiver.
     const eventType = Reflect.get(event, 'event', event);
+    // oxlint-disable-next-line anti-slop/no-reflect-get -- Keep the paired wire-data read on the original receiver after reading the event discriminator.
     const data = Reflect.get(event, 'data', event);
     let stableData = data;
     if (eventType === 'thread.message.created' ||
@@ -14586,15 +18316,22 @@ function stabilizeAssistantStreamEvent(event) {
         eventType === 'thread.run.step.cancelled' ||
         eventType === 'thread.run.step.expired') {
         const messageID = Object.getOwnPropertyDescriptor(data, 'id');
-        if (messageID && 'value' in messageID && Reflect.get(data, 'id', data) !== messageID.value) {
+        if (messageID &&
+            'value' in messageID &&
+            // SAFETY: The own id descriptor was found above; keep its live read unknown while comparing it with the captured descriptor value.
+            data.id !== messageID.value) {
+            // SAFETY: Descriptor values are untyped; retaining this value as unknown avoids trusting a mutable message identifier.
             const canonicalID = messageID.value;
+            // SAFETY: The proxy retains the event data and substitutes only its captured own id; all other properties forward to the original receiver.
             stableData = new Proxy(data, {
                 get(target, property) {
+                    // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys with the original target as accessor receiver.
                     return property === 'id' ? canonicalID : Reflect.get(target, property, target);
                 },
             });
         }
     }
+    // SAFETY: The captured event discriminator and data originate from the same event; TypeScript loses their correlation when constructing the stabilized copy.
     const stableEvent = Object.freeze({ event: eventType, data: stableData });
     const ordinaryEvent = eventDescriptor !== undefined &&
         'value' in eventDescriptor &&
@@ -14603,6 +18340,7 @@ function stabilizeAssistantStreamEvent(event) {
         'value' in dataDescriptor &&
         dataDescriptor.value === data &&
         stableData === data;
+    // SAFETY: The captured event discriminator and data originate from the same event; TypeScript loses their correlation when constructing the stabilized copy.
     return {
         event: stableEvent,
         exposedEvent: ordinaryEvent ? event : { event: eventType, data: stableData },
@@ -14655,7 +18393,7 @@ class AssistantStream extends EventStream {
             __classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_addEvent).call(this, event);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return this._addRun(__classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_endRequest).call(this));
     }
@@ -14685,7 +18423,7 @@ class AssistantStream extends EventStream {
             __classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_addEvent).call(this, event);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return this._addRun(__classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_endRequest).call(this));
     }
@@ -14757,7 +18495,7 @@ class AssistantStream extends EventStream {
             __classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_addEvent).call(this, event);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return this._addRun(__classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_endRequest).call(this));
     }
@@ -14770,7 +18508,7 @@ class AssistantStream extends EventStream {
             __classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_addEvent).call(this, event);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return this._addRun(__classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_endRequest).call(this));
     }
@@ -15106,6 +18844,7 @@ _AssistantStream_addEvent = function _AssistantStream_addEvent(event) {
                 accumulatedRunStep.step_details.type === 'tool_calls') {
                 for (const toolCall of delta.step_details.tool_calls) {
                     if (toolCall.index === __classPrivateFieldGet(this, _AssistantStream_currentToolCallIndex, "f")) {
+                        // SAFETY: The indexed tool call comes from this run-step snapshot after applying the delta for the same tool-call index.
                         __classPrivateFieldGet(this, _AssistantStream_instances, "m", _AssistantStream_emitExposed).call(this, 'toolCallDelta', toolCall, accumulatedRunStep.step_details.tool_calls[toolCall.index]);
                     }
                     else {
@@ -15158,6 +18897,7 @@ _AssistantStream_addEvent = function _AssistantStream_addEvent(event) {
             return event.data;
         }
         case 'thread.run.step.delta': {
+            // SAFETY: Run-step snapshots are stored by their canonical run-step id; the delta path checks that the snapshot exists before updating it.
             const snapshot = __classPrivateFieldGet(this, _AssistantStream_runStepSnapshots, "f")[runStepID];
             if (!snapshot) {
                 throw new Error('Received a RunStepDelta before creation of a snapshot');
@@ -15171,6 +18911,7 @@ _AssistantStream_addEvent = function _AssistantStream_addEvent(event) {
                 const accumulated = accumulateAssistantStreamDelta(snapshot, delta, true);
                 __classPrivateFieldGet(this, _AssistantStream_runStepSnapshots, "f")[runStepID] = accumulated;
             }
+            // SAFETY: Run-step snapshots are stored by their canonical run-step id; the delta path checks that the snapshot exists before updating it.
             return __classPrivateFieldGet(this, _AssistantStream_runStepSnapshots, "f")[runStepID];
         }
         case 'thread.run.step.completed':
@@ -15230,6 +18971,7 @@ _AssistantStream_addEvent = function _AssistantStream_addEvent(event) {
     }
     throw new Error('Tried to accumulate a non-message event');
 }, _AssistantStream_accumulateContent = function _AssistantStream_accumulateContent(contentElement, currentContent, cacheArrays) {
+    // SAFETY: The accumulator merges the matching message-content delta into its existing block; the public return remains the text/image block union.
     return accumulateAssistantStreamDelta(currentContent, contentElement, cacheArrays);
 }, _AssistantStream_handleRun = function _AssistantStream_handleRun(event) {
     __classPrivateFieldSet(this, _AssistantStream_currentRunSnapshot, event.data, "f");
@@ -15420,6 +19162,61 @@ function pollAssistantRun(resource, runID, params, options) {
 
 
 
+function runs_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const runs_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function runs_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => runs_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !runs_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Build Assistants that can call models and use tools.
  *
@@ -15432,7 +19229,7 @@ class Runs extends APIResource {
     }
     create(threadID, params, options) {
         const { include, ...body } = params;
-        return this._client.post(path `/threads/${threadID}/runs`, {
+        return this._client.post(path `/threads/${threadID}/runs`, runs_resolveResourceRequestOptions(options, (options) => ({
             query: { include },
             body,
             ...options,
@@ -15440,7 +19237,7 @@ class Runs extends APIResource {
             stream: params.stream ?? false,
             __synthesizeEventData: true,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a run.
@@ -15449,11 +19246,11 @@ class Runs extends APIResource {
      */
     retrieve(runID, params, options) {
         const { thread_id } = params;
-        return this._client.get(path `/threads/${thread_id}/runs/${runID}`, {
+        return this._client.get(path `/threads/${thread_id}/runs/${runID}`, runs_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a run.
@@ -15462,25 +19259,26 @@ class Runs extends APIResource {
      */
     update(runID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}`, {
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}`, runs_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of runs belonging to a thread.
-     *
-     * @deprecated The Assistants API is deprecated in favor of the Responses API
-     */
     list(threadID, query = {}, options) {
-        return this._client.getAPIList(path `/threads/${threadID}/runs`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = runs_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/threads/${threadID}/runs`, (CursorPage), runs_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Cancels a run that is `in_progress`.
@@ -15489,11 +19287,11 @@ class Runs extends APIResource {
      */
     cancel(runID, params, options) {
         const { thread_id } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}/cancel`, {
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}/cancel`, runs_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * A helper to create a run an poll for a terminal state. More information on Run
@@ -15528,14 +19326,14 @@ class Runs extends APIResource {
     }
     submitToolOutputs(runID, params, options) {
         const { thread_id, ...body } = params;
-        return this._client.post(path `/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, {
+        return this._client.post(path `/threads/${thread_id}/runs/${runID}/submit_tool_outputs`, runs_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             stream: params.stream ?? false,
             __synthesizeEventData: true,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * A helper to submit a tool output to a run and poll for a terminal run state.
@@ -15567,6 +19365,9 @@ Runs.Steps = Steps;
 
 
 
+function threads_threads_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Build Assistants that can call models and use tools.
  *
@@ -15584,12 +19385,12 @@ class threads_Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     create(body = {}, options) {
-        return this._client.post('/threads', {
+        return this._client.post('/threads', threads_threads_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a thread.
@@ -15597,11 +19398,11 @@ class threads_Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     retrieve(threadID, options) {
-        return this._client.get(path `/threads/${threadID}`, {
+        return this._client.get(path `/threads/${threadID}`, threads_threads_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a thread.
@@ -15609,12 +19410,12 @@ class threads_Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     update(threadID, body, options) {
-        return this._client.post(path `/threads/${threadID}`, {
+        return this._client.post(path `/threads/${threadID}`, threads_threads_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a thread.
@@ -15622,21 +19423,21 @@ class threads_Threads extends APIResource {
      * @deprecated The Assistants API is deprecated in favor of the Responses API
      */
     delete(threadID, options) {
-        return this._client.delete(path `/threads/${threadID}`, {
+        return this._client.delete(path `/threads/${threadID}`, threads_threads_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     createAndRun(body, options) {
-        return this._client.post('/threads/runs', {
+        return this._client.post('/threads/runs', threads_threads_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             stream: body.stream ?? false,
             __synthesizeEventData: true,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * A helper to create a thread, start a run and then poll for a terminal state.
@@ -15693,17 +19494,20 @@ Beta.Threads = threads_Threads;
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/completions.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function resources_completions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Given a prompt, the model will return one or more predicted completions, and can also return the probabilities of alternative tokens at each position.
  */
 class completions_Completions extends APIResource {
     create(body, options) {
-        return this._client.post('/completions', {
+        return this._client.post('/completions', resources_completions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             stream: body.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=completions.mjs.map
@@ -15712,18 +19516,21 @@ class completions_Completions extends APIResource {
 
 
 
+function content_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Content extends APIResource {
     /**
      * Retrieve Container File Content
      */
     retrieve(fileID, params, options) {
         const { container_id } = params;
-        return this._client.get(path `/containers/${container_id}/files/${fileID}/content`, {
+        return this._client.get(path `/containers/${container_id}/files/${fileID}/content`, content_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
 }
 //# sourceMappingURL=content.mjs.map
@@ -15736,6 +19543,61 @@ class Content extends APIResource {
 
 
 
+function files_files_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const files_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function files_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => files_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !files_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class files_Files extends APIResource {
     constructor() {
         super(...arguments);
@@ -15748,38 +19610,38 @@ class files_Files extends APIResource {
      * a JSON request with a file ID.
      */
     create(containerID, body, options) {
-        return this._client.post(path `/containers/${containerID}/files`, maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post(path `/containers/${containerID}/files`, files_files_resolveResourceRequestOptions(options, (options) => maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Retrieve Container File
      */
     retrieve(fileID, params, options) {
         const { container_id } = params;
-        return this._client.get(path `/containers/${container_id}/files/${fileID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/containers/${container_id}/files/${fileID}`, files_files_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List Container files
-     */
     list(containerID, query = {}, options) {
-        return this._client.getAPIList(path `/containers/${containerID}/files`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = files_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/containers/${containerID}/files`, (CursorPage), files_files_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete Container File
      */
     delete(fileID, params, options) {
         const { container_id } = params;
-        return this._client.delete(path `/containers/${container_id}/files/${fileID}`, {
+        return this._client.delete(path `/containers/${container_id}/files/${fileID}`, files_files_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 files_Files.Content = Content;
@@ -15792,6 +19654,61 @@ files_Files.Content = Content;
 
 
 
+function containers_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const containers_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function containers_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => containers_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !containers_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Containers extends APIResource {
     constructor() {
         super(...arguments);
@@ -15801,36 +19718,40 @@ class Containers extends APIResource {
      * Create Container
      */
     create(body, options) {
-        return this._client.post('/containers', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/containers', containers_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Retrieve Container
      */
     retrieve(containerID, options) {
-        return this._client.get(path `/containers/${containerID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/containers/${containerID}`, containers_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List Containers
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/containers', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = containers_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'name', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/containers', (CursorPage), containers_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete Container
      */
     delete(containerID, options) {
-        return this._client.delete(path `/containers/${containerID}`, {
+        return this._client.delete(path `/containers/${containerID}`, containers_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 Containers.Files = files_Files;
@@ -15839,6 +19760,9 @@ Containers.Files = files_Files;
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function content_provenance_checks_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class ContentProvenanceChecks extends APIResource {
     /**
      * Check whether an image or audio file contains known OpenAI provenance signals.
@@ -15852,7 +19776,7 @@ class ContentProvenanceChecks extends APIResource {
      * company's model, which the tool currently does not detect.
      */
     create(body, options) {
-        return this._client.post('/content_provenance_checks', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/content_provenance_checks', content_provenance_checks_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
 }
 //# sourceMappingURL=content-provenance-checks.mjs.map
@@ -15861,6 +19785,61 @@ class ContentProvenanceChecks extends APIResource {
 
 
 
+function conversations_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const conversations_items_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function conversations_items_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => conversations_items_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !conversations_items_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage conversations and conversation items.
  */
@@ -15870,39 +19849,43 @@ class conversations_items_Items extends APIResource {
      */
     create(conversationID, params, options) {
         const { include, ...body } = params;
-        return this._client.post(path `/conversations/${conversationID}/items`, {
+        return this._client.post(path `/conversations/${conversationID}/items`, conversations_items_resolveResourceRequestOptions(options, (options) => ({
             query: { include },
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Get a single item from a conversation with the given IDs.
      */
     retrieve(itemID, params, options) {
         const { conversation_id, ...query } = params;
-        return this._client.get(path `/conversations/${conversation_id}/items/${itemID}`, {
+        return this._client.get(path `/conversations/${conversation_id}/items/${itemID}`, conversations_items_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * List all items for a conversation with the given ID.
-     */
     list(conversationID, query = {}, options) {
-        return this._client.getAPIList(path `/conversations/${conversationID}/items`, (ConversationCursorPage), { query, ...options, __security: { bearerAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = conversations_items_normalizeRequestOptionsForQuery(query, ['after', 'include', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/conversations/${conversationID}/items`, (ConversationCursorPage), conversations_items_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Delete an item from a conversation with the given IDs.
      */
     delete(itemID, params, options) {
         const { conversation_id } = params;
-        return this._client.delete(path `/conversations/${conversation_id}/items/${itemID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.delete(path `/conversations/${conversation_id}/items/${itemID}`, conversations_items_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 //# sourceMappingURL=items.mjs.map
@@ -15912,6 +19895,9 @@ class conversations_items_Items extends APIResource {
 
 
 
+function conversations_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Manage conversations and conversation items.
  */
@@ -15924,39 +19910,66 @@ class Conversations extends APIResource {
      * Create a conversation.
      */
     create(body = {}, options) {
-        return this._client.post('/conversations', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/conversations', conversations_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Get a conversation
      */
     retrieve(conversationID, options) {
-        return this._client.get(path `/conversations/${conversationID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/conversations/${conversationID}`, conversations_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Update a conversation
      */
     update(conversationID, body, options) {
-        return this._client.post(path `/conversations/${conversationID}`, {
+        return this._client.post(path `/conversations/${conversationID}`, conversations_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a conversation. Items in the conversation will not be deleted.
      */
     delete(conversationID, options) {
-        return this._client.delete(path `/conversations/${conversationID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.delete(path `/conversations/${conversationID}`, conversations_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Conversations.Items = conversations_items_Items;
 //# sourceMappingURL=conversations.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/decisions.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+function decisions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class Decisions extends APIResource {
+    /**
+     * Evaluate ordered classification and scoring questions against shared input.
+     * Answers are returned in question order.
+     *
+     * Supply input as a string or user messages containing text and inline images.
+     * Only user messages with `input_text` and `input_image` parts are supported;
+     * non-user roles, function calls, files, audio, and item references are not
+     * supported. Images require a data URL, not an external URL or file ID. At most
+     * 128 images are allowed across the request.
+     *
+     * Each question can return a refusal instead of a scored answer. A refusal has
+     * type `refusal` and the corresponding question name, or null if unnamed.
+     */
+    create(body, options) {
+        return this._client.post('/decisions', decisions_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+//# sourceMappingURL=decisions.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/lib/embeddings.mjs
 
 /**
@@ -15997,12 +20010,14 @@ function createEmbedding(client, body, options) {
             // Preserve the original iteration length and skip sparse-array holes.
             for (let index = 0; index < length; index += 1) {
                 if (index in embeddings) {
+                    // SAFETY: This indexed entry belongs to the API embedding data array; sparse entries are skipped by the preceding membership check.
                     const embeddingBase64Obj = embeddings[index];
                     const { embedding } = embeddingBase64Obj;
                     // Request hooks and serialization can also select float embeddings.
                     if (Array.isArray(embedding)) {
                         continue;
                     }
+                    // SAFETY: The Array.isArray branch already handled decoded vectors; this request explicitly asked the server for base64 encoding.
                     embeddingBase64Obj.embedding = toFloat32Array(embedding);
                 }
             }
@@ -16029,6 +20044,9 @@ class Embeddings extends APIResource {
 
 
 
+function output_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Manage and run evals in the OpenAI platform.
  */
@@ -16038,17 +20056,18 @@ class OutputItems extends APIResource {
      */
     retrieve(outputItemID, params, options) {
         const { eval_id, run_id } = params;
-        return this._client.get(path `/evals/${eval_id}/runs/${run_id}/output_items/${outputItemID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/evals/${eval_id}/runs/${run_id}/output_items/${outputItemID}`, output_items_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Get a list of output items for an evaluation run.
      */
     list(runID, params, options) {
         const { eval_id, ...query } = params;
-        return this._client.getAPIList(path `/evals/${eval_id}/runs/${runID}/output_items`, (CursorPage), { query, ...options, __security: { bearerAuth: true } });
+        return this._client.getAPIList(path `/evals/${eval_id}/runs/${runID}/output_items`, (CursorPage), output_items_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=output-items.mjs.map
@@ -16059,6 +20078,61 @@ class OutputItems extends APIResource {
 
 
 
+function runs_runs_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const runs_runs_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function runs_runs_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => runs_runs_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !runs_runs_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage and run evals in the OpenAI platform.
  */
@@ -16073,51 +20147,45 @@ class runs_Runs extends APIResource {
      * schema specified in the config of the evaluation.
      */
     create(evalID, body, options) {
-        return this._client.post(path `/evals/${evalID}/runs`, {
+        return this._client.post(path `/evals/${evalID}/runs`, runs_runs_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Get an evaluation run by ID.
      */
     retrieve(runID, params, options) {
         const { eval_id } = params;
-        return this._client.get(path `/evals/${eval_id}/runs/${runID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/evals/${eval_id}/runs/${runID}`, runs_runs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * Get a list of runs for an evaluation.
-     */
     list(evalID, query = {}, options) {
-        return this._client.getAPIList(path `/evals/${evalID}/runs`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = runs_runs_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'status'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/evals/${evalID}/runs`, (CursorPage), runs_runs_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete an eval run.
      */
     delete(runID, params, options) {
         const { eval_id } = params;
-        return this._client.delete(path `/evals/${eval_id}/runs/${runID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.delete(path `/evals/${eval_id}/runs/${runID}`, runs_runs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Cancel an ongoing evaluation run.
      */
     cancel(runID, params, options) {
         const { eval_id } = params;
-        return this._client.post(path `/evals/${eval_id}/runs/${runID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/evals/${eval_id}/runs/${runID}/cancel`, runs_runs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 runs_Runs.OutputItems = OutputItems;
@@ -16129,6 +20197,61 @@ runs_Runs.OutputItems = OutputItems;
 
 
 
+function evals_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const evals_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function evals_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => evals_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !evals_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage and run evals in the OpenAI platform.
  */
@@ -16146,35 +20269,46 @@ class Evals extends APIResource {
      * the [Evals guide](https://developers.openai.com/api/docs/guides/evals).
      */
     create(body, options) {
-        return this._client.post('/evals', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/evals', evals_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Get an evaluation by ID.
      */
     retrieve(evalID, options) {
-        return this._client.get(path `/evals/${evalID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/evals/${evalID}`, evals_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Update certain properties of an evaluation.
      */
     update(evalID, body, options) {
-        return this._client.post(path `/evals/${evalID}`, { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post(path `/evals/${evalID}`, evals_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
-    /**
-     * List evaluations for a project.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/evals', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = evals_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'order_by'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/evals', (CursorPage), evals_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete an evaluation.
      */
     delete(evalID, options) {
-        return this._client.delete(path `/evals/${evalID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.delete(path `/evals/${evalID}`, evals_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Evals.Runs = runs_Runs;
@@ -16216,6 +20350,61 @@ async function waitForFileProcessing(resource, id, pollInterval, maxWait) {
 
 
 
+function resources_files_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const resources_files_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function resources_files_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => resources_files_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !resources_files_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Files are used to upload documents that can be used with features like Assistants and Fine-tuning.
  */
@@ -16250,40 +20439,43 @@ class resources_files_Files extends APIResource {
      * storage limits.
      */
     create(body, options) {
-        return this._client.post('/files', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/files', resources_files_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Returns information about a specific file.
      */
     retrieve(fileID, options) {
-        return this._client.get(path `/files/${fileID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/files/${fileID}`, resources_files_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * Returns a list of files.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/files', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = resources_files_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'purpose'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/files', (CursorPage), resources_files_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a file and remove it from all vector stores.
      */
     delete(fileID, options) {
-        return this._client.delete(path `/files/${fileID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.delete(path `/files/${fileID}`, resources_files_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Returns a response containing the contents of the specified file.
      */
     content(fileID, options) {
-        return this._client.get(path `/files/${fileID}/content`, {
+        return this._client.get(path `/files/${fileID}/content`, resources_files_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
     /**
      * Waits for the given file to be processed, default timeout is 30 mins.
@@ -16302,6 +20494,9 @@ class Methods extends APIResource {
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/fine-tuning/alpha/graders.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function graders_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Manage fine-tuning jobs to tailor a model to your specific training data.
  */
@@ -16324,11 +20519,11 @@ class Graders extends APIResource {
      * ```
      */
     run(body, options) {
-        return this._client.post('/fine_tuning/alpha/graders/run', {
+        return this._client.post('/fine_tuning/alpha/graders/run', graders_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Validate a grader.
@@ -16348,11 +20543,11 @@ class Graders extends APIResource {
      * ```
      */
     validate(body, options) {
-        return this._client.post('/fine_tuning/alpha/graders/validate', {
+        return this._client.post('/fine_tuning/alpha/graders/validate', graders_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=graders.mjs.map
@@ -16374,6 +20569,61 @@ Alpha.Graders = Graders;
 
 
 
+function permissions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const permissions_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function permissions_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => permissions_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !permissions_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage fine-tuning jobs to tailor a model to your specific training data.
  */
@@ -16397,43 +20647,38 @@ class Permissions extends APIResource {
      * ```
      */
     create(fineTunedModelCheckpoint, body, options) {
-        return this._client.getAPIList(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, (Page), { body, method: 'post', ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.getAPIList(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, (Page), permissions_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            method: 'post',
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
-    /**
-     * **NOTE:** This endpoint requires an
-     * [admin API key](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/admin_api_keys).
-     *
-     * Organization owners can use this endpoint to view all permissions for a
-     * fine-tuned model checkpoint.
-     *
-     * @deprecated Retrieve is deprecated. Please swap to the paginated list method instead.
-     */
     retrieve(fineTunedModelCheckpoint, query = {}, options) {
-        return this._client.get(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, {
+        const normalizeRequestOptionsForQueryOptions = permissions_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'project_id'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.get(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, permissions_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { adminAPIKeyAuth: true },
-        });
+        })));
     }
-    /**
-     * **NOTE:** This endpoint requires an
-     * [admin API key](https://developers.openai.com/api/reference/resources/admin/subresources/organization/subresources/admin_api_keys).
-     *
-     * Organization owners can use this endpoint to view all permissions for a
-     * fine-tuned model checkpoint.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const permissionListResponse of client.fineTuning.checkpoints.permissions.list(
-     *   'ft-AF1WoRqd3aJAHsqc9NY7iL8F',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(fineTunedModelCheckpoint, query = {}, options) {
-        return this._client.getAPIList(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, (ConversationCursorPage), { query, ...options, __security: { adminAPIKeyAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = permissions_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order', 'project_id'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/fine_tuning/checkpoints/${fineTunedModelCheckpoint}/permissions`, (ConversationCursorPage), permissions_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
     /**
      * **NOTE:** This endpoint requires an
@@ -16456,7 +20701,10 @@ class Permissions extends APIResource {
      */
     delete(permissionID, params, options) {
         const { fine_tuned_model_checkpoint } = params;
-        return this._client.delete(path `/fine_tuning/checkpoints/${fine_tuned_model_checkpoint}/permissions/${permissionID}`, { ...options, __security: { adminAPIKeyAuth: true } });
+        return this._client.delete(path `/fine_tuning/checkpoints/${fine_tuned_model_checkpoint}/permissions/${permissionID}`, permissions_resolveResourceRequestOptions(options, (options) => ({
+            ...options,
+            __security: { adminAPIKeyAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=permissions.mjs.map
@@ -16478,25 +20726,77 @@ Checkpoints.Permissions = Permissions;
 
 
 
+function checkpoints_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const checkpoints_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function checkpoints_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => checkpoints_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !checkpoints_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage fine-tuning jobs to tailor a model to your specific training data.
  */
 class checkpoints_Checkpoints extends APIResource {
-    /**
-     * List checkpoints for a fine-tuning job.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const fineTuningJobCheckpoint of client.fineTuning.jobs.checkpoints.list(
-     *   'ft-AF1WoRqd3aJAHsqc9NY7iL8F',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(fineTuningJobID, query = {}, options) {
-        return this._client.getAPIList(path `/fine_tuning/jobs/${fineTuningJobID}/checkpoints`, (CursorPage), { query, ...options, __security: { bearerAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = checkpoints_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/fine_tuning/jobs/${fineTuningJobID}/checkpoints`, (CursorPage), checkpoints_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=checkpoints.mjs.map
@@ -16507,6 +20807,61 @@ class checkpoints_Checkpoints extends APIResource {
 
 
 
+function jobs_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const jobs_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function jobs_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => jobs_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !jobs_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * Manage fine-tuning jobs to tailor a model to your specific training data.
  */
@@ -16533,7 +20888,11 @@ class Jobs extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/fine_tuning/jobs', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/fine_tuning/jobs', jobs_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Get info about a fine-tuning job.
@@ -16548,28 +20907,20 @@ class Jobs extends APIResource {
      * ```
      */
     retrieve(fineTuningJobID, options) {
-        return this._client.get(path `/fine_tuning/jobs/${fineTuningJobID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/fine_tuning/jobs/${fineTuningJobID}`, jobs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List your organization's fine-tuning jobs
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const fineTuningJob of client.fineTuning.jobs.list()) {
-     *   // ...
-     * }
-     * ```
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/fine_tuning/jobs', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = jobs_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'metadata'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/fine_tuning/jobs', (CursorPage), jobs_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Immediately cancel a fine-tune job.
@@ -16582,26 +20933,20 @@ class Jobs extends APIResource {
      * ```
      */
     cancel(fineTuningJobID, options) {
-        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/cancel`, {
+        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/cancel`, jobs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+    listEvents(fineTuningJobID, query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = jobs_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/fine_tuning/jobs/${fineTuningJobID}/events`, (CursorPage), jobs_resolveResourceRequestOptions(options, (options) => ({
+            query,
             ...options,
             __security: { bearerAuth: true },
-        });
-    }
-    /**
-     * Get status updates for a fine-tuning job.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const fineTuningJobEvent of client.fineTuning.jobs.listEvents(
-     *   'ft-AF1WoRqd3aJAHsqc9NY7iL8F',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
-    listEvents(fineTuningJobID, query = {}, options) {
-        return this._client.getAPIList(path `/fine_tuning/jobs/${fineTuningJobID}/events`, (CursorPage), { query, ...options, __security: { bearerAuth: true } });
+        })));
     }
     /**
      * Pause a fine-tune job.
@@ -16614,10 +20959,7 @@ class Jobs extends APIResource {
      * ```
      */
     pause(fineTuningJobID, options) {
-        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/pause`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/pause`, jobs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Resume a fine-tune job.
@@ -16630,10 +20972,7 @@ class Jobs extends APIResource {
      * ```
      */
     resume(fineTuningJobID, options) {
-        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/resume`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/fine_tuning/jobs/${fineTuningJobID}/resume`, jobs_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Jobs.Checkpoints = checkpoints_Checkpoints;
@@ -16686,39 +21025,39 @@ graders_Graders.GraderModels = GraderModels;
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function images_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Given a prompt and/or an input image, the model will generate a new image.
  */
 class Images extends APIResource {
     /**
-     * Creates a variation of a given image. This endpoint only supports `dall-e-2`.
+     * This endpoint is retired and no longer available. Use the image edits endpoint
+     * with a GPT Image model and a prompt to create a variation of an image. The
+     * request and response schemas below describe the legacy contract.
      *
-     * @example
-     * ```ts
-     * const imagesResponse = await client.images.createVariation({
-     *   image: fs.createReadStream('otter.png'),
-     * });
-     * ```
+     * @deprecated
      */
     createVariation(body, options) {
-        return this._client.post('/images/variations', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/images/variations', images_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     edit(body, options) {
-        return this._client.post('/images/edits', multipartFormRequestOptions({
+        return this._client.post('/images/edits', images_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({
             body,
             ...options,
             stream: body.stream ?? false,
             __metadata: { ...options?.__metadata, ...(body.model == null ? {} : { model: body.model }) },
             __security: { bearerAuth: true },
-        }, this._client));
+        }, this._client)));
     }
     generate(body, options) {
-        return this._client.post('/images/generations', {
+        return this._client.post('/images/generations', images_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             stream: body.stream ?? false,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=images.mjs.map
@@ -16727,6 +21066,9 @@ class Images extends APIResource {
 
 
 
+function live_sessions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class live_sessions_Sessions extends APIResource {
     /**
      * Accept an incoming SIP call. Supply session with type live, the model, and
@@ -16743,12 +21085,12 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     accept(sessionID, body, options) {
-        return this._client.post(path `/live/sessions/${sessionID}/accept`, {
+        return this._client.post(path `/live/sessions/${sessionID}/accept`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Get Live session content
@@ -16763,12 +21105,12 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     downloadRecording(sessionID, options) {
-        return this._client.get(path `/live/sessions/${sessionID}/content`, {
+        return this._client.get(path `/live/sessions/${sessionID}/content`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
     /**
      * Fork a stored Live session onto a new WebRTC connection.
@@ -16782,11 +21124,11 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     fork(sessionID, body, options) {
-        return this._client.post(path `/live/sessions/${sessionID}/fork`, {
+        return this._client.post(path `/live/sessions/${sessionID}/fork`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * End a SIP call identified by session_id.
@@ -16797,11 +21139,11 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     hangup(sessionID, options) {
-        return this._client.post(path `/live/sessions/${sessionID}/hangup`, {
+        return this._client.post(path `/live/sessions/${sessionID}/hangup`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Transfer a SIP call to another destination. Supply a nonblank target_uri for the
@@ -16815,12 +21157,12 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     refer(sessionID, body, options) {
-        return this._client.post(path `/live/sessions/${sessionID}/refer`, {
+        return this._client.post(path `/live/sessions/${sessionID}/refer`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Reject an incoming SIP call. Send a required SIP rejection status_code between
@@ -16834,12 +21176,12 @@ class live_sessions_Sessions extends APIResource {
      * ```
      */
     reject(sessionID, body, options) {
-        return this._client.post(path `/live/sessions/${sessionID}/reject`, {
+        return this._client.post(path `/live/sessions/${sessionID}/reject`, live_sessions_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=sessions.mjs.map
@@ -16864,6 +21206,9 @@ class Sideband extends APIResource {
 
 
 
+function live_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Live extends APIResource {
     constructor() {
         super(...arguments);
@@ -16884,7 +21229,11 @@ class Live extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/live/sessions', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/live/sessions', live_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 Live.Sideband = Sideband;
@@ -16896,6 +21245,9 @@ Live.Sessions = live_sessions_Sessions;
 
 
 
+function models_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * List and describe the various models available in the API.
  */
@@ -16905,27 +21257,30 @@ class Models extends APIResource {
      * the owner and permissioning.
      */
     retrieve(model, options) {
-        return this._client.get(path `/models/${model}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/models/${model}`, models_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Lists the currently available models, and provides basic information about each
      * one such as the owner and availability.
      */
     list(options) {
-        return this._client.getAPIList('/models', (Page), { ...options, __security: { bearerAuth: true } });
+        return this._client.getAPIList('/models', (Page), models_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Delete a fine-tuned model. You must have the Owner role in your organization to
      * delete a model.
      */
     delete(model, options) {
-        return this._client.delete(path `/models/${model}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.delete(path `/models/${model}`, models_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 //# sourceMappingURL=models.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/moderations.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function moderations_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Given text and/or image inputs, classifies if those inputs are potentially harmful.
  */
@@ -16936,7 +21291,11 @@ class Moderations extends APIResource {
      * [moderation guide](https://developers.openai.com/api/docs/guides/moderation).
      */
     create(body, options) {
-        return this._client.post('/moderations', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/moderations', moderations_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=moderations.mjs.map
@@ -16995,6 +21354,9 @@ async function encodedMultipartFormRequestOptions(options, client, encodings, ra
 
 
 
+function calls_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Calls extends APIResource {
     /**
      * Create a new Realtime API call over WebRTC and receive the SDP answer needed to
@@ -17008,7 +21370,7 @@ class Calls extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/realtime/calls', encodedMultipartFormRequestOptions({
+        return this._client.post('/realtime/calls', calls_resolveResourceRequestOptions(options, (options) => encodedMultipartFormRequestOptions({
             body,
             ...options,
             headers: buildHeaders([{ Accept: 'application/sdp' }, options?.headers]),
@@ -17017,7 +21379,7 @@ class Calls extends APIResource {
         }, this._client, {
             sdp: { content_type: 'application/sdp', json: false },
             session: { content_type: 'application/json', json: true },
-        }, 'sdp'));
+        }, 'sdp')));
     }
     /**
      * Accept an incoming SIP call and configure the realtime session that will handle
@@ -17031,12 +21393,12 @@ class Calls extends APIResource {
      * ```
      */
     accept(callID, body, options) {
-        return this._client.post(path `/realtime/calls/${callID}/accept`, {
+        return this._client.post(path `/realtime/calls/${callID}/accept`, calls_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * End an active Realtime API call, whether it was initiated over SIP or WebRTC.
@@ -17047,11 +21409,11 @@ class Calls extends APIResource {
      * ```
      */
     hangup(callID, options) {
-        return this._client.post(path `/realtime/calls/${callID}/hangup`, {
+        return this._client.post(path `/realtime/calls/${callID}/hangup`, calls_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Transfer an active SIP call to a new destination using the SIP REFER verb.
@@ -17064,12 +21426,12 @@ class Calls extends APIResource {
      * ```
      */
     refer(callID, body, options) {
-        return this._client.post(path `/realtime/calls/${callID}/refer`, {
+        return this._client.post(path `/realtime/calls/${callID}/refer`, calls_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Decline an incoming SIP call by returning a SIP status code to the caller.
@@ -17080,18 +21442,21 @@ class Calls extends APIResource {
      * ```
      */
     reject(callID, body = {}, options) {
-        return this._client.post(path `/realtime/calls/${callID}/reject`, {
+        return this._client.post(path `/realtime/calls/${callID}/reject`, calls_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=calls.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/realtime/client-secrets.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function client_secrets_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class ClientSecrets extends APIResource {
     /**
      * Create a Realtime client secret with an associated session configuration.
@@ -17117,16 +21482,67 @@ class ClientSecrets extends APIResource {
      * ```
      */
     create(body, options) {
-        return this._client.post('/realtime/client_secrets', {
+        return this._client.post('/realtime/client_secrets', client_secrets_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=client-secrets.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/realtime/translations/client-secrets.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+function translations_client_secrets_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class client_secrets_ClientSecrets extends APIResource {
+    /**
+     * Create a Realtime translation client secret with an associated translation
+     * session configuration.
+     *
+     * Client secrets are short-lived tokens that can be passed to a client app, such
+     * as a web frontend or mobile client, which grants access to the Realtime
+     * Translation API without leaking your main API key. You can configure a custom
+     * TTL for each client secret.
+     *
+     * Returns the created client secret and the effective translation session object.
+     * The client secret is a string that looks like `ek_1234`.
+     *
+     * @example
+     * ```ts
+     * const realtimeTranslationClientSecretCreateResponse =
+     *   await client.realtime.translations.clientSecrets.create(
+     *     { session: { model: 'model' } },
+     *   );
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/realtime/translations/client_secrets', translations_client_secrets_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+}
+//# sourceMappingURL=client-secrets.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/realtime/translations/translations.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+
+class translations_Translations extends APIResource {
+    constructor() {
+        super(...arguments);
+        this.clientSecrets = new client_secrets_ClientSecrets(this._client);
+    }
+}
+translations_Translations.ClientSecrets = client_secrets_ClientSecrets;
+//# sourceMappingURL=translations.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/realtime/realtime.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
 
 
 
@@ -17137,10 +21553,12 @@ class realtime_Realtime extends APIResource {
         super(...arguments);
         this.clientSecrets = new ClientSecrets(this._client);
         this.calls = new Calls(this._client);
+        this.translations = new translations_Translations(this._client);
     }
 }
 realtime_Realtime.ClientSecrets = ClientSecrets;
 realtime_Realtime.Calls = Calls;
+realtime_Realtime.Translations = translations_Translations;
 //# sourceMappingURL=realtime.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/lib/ResponsesParser.mjs
 
@@ -17174,6 +21592,7 @@ function maybeParseResponse(response, params) {
             }),
         };
         if (needsOutputText(response, parsed)) {
+            // SAFETY: The copy retains every response field and only adds parsed metadata; addOutputText accepts that original response structure.
             addOutputText(parsed);
         }
         return parsed;
@@ -17184,7 +21603,7 @@ function maybeParseResponse(response, params) {
  * Parses completed response text and strict function-tool arguments, matching
  * namespaced functions by both namespace and name.
  *
- * Incomplete or nonterminal responses keep their parsed values as `null`, and
+ * Incomplete responses and messages with an explicit non-final phase stay unparsed.
  * `output_parsed` returns the first successfully parsed output-text item.
  */
 function parseResponse(response, params) {
@@ -17198,7 +21617,9 @@ function parseResponse(response, params) {
                 if (content.type === 'output_text') {
                     return {
                         ...content,
-                        parsed: shouldParse ? parseTextFormat(params, content.text) : null,
+                        parsed: shouldParse && (item.phase == null || item.phase === 'final_answer')
+                            ? parseTextFormat(params, content.text)
+                            : null,
                     };
                 }
                 return content;
@@ -17230,6 +21651,7 @@ function parseResponse(response, params) {
             return null;
         },
     });
+    // SAFETY: The output_parsed getter was installed immediately above and returns the first parsed content or null.
     return parsed;
 }
 function parseTextFormat(params, content) {
@@ -17263,6 +21685,7 @@ function makeParseableResponseTool(tool, { parser, callback, }) {
             enumerable: false,
         },
     });
+    // SAFETY: The non-enumerable parser brand and callbacks were installed on this copied tool immediately above.
     return obj;
 }
 /** Returns whether a Responses API tool carries the SDK's argument-parser marker. */
@@ -17280,10 +21703,16 @@ function getInputToolByName(input_tools, name, namespace) {
             return tool.tools.find((nested) => nested.type === 'function' && nested.name === name);
         }
     }
+    // Hosted discovery exposes a deferred top-level function under its own name.
+    // A declared namespace above owns that identity, even if it has no matching function.
+    if (namespace === name) {
+        return input_tools.find((tool) => tool.type === 'function' && tool.name === name && tool.defer_loading === true);
+    }
     return undefined;
 }
 function ResponsesParser_parseToolCall(params, toolCall) {
     const inputTool = getInputToolByName(params.tools ?? [], toolCall.name, toolCall.namespace);
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- Parsing replaces the initial null with an arbitrary caller-parser result, so unknown is required.
     let parsedArguments = null;
     if (ResponsesParser_isAutoParsableTool(inputTool)) {
         parsedArguments = inputTool.$parseRaw(toolCall.arguments);
@@ -17435,6 +21864,10 @@ function getOutputText(context, output) {
     return text;
 }
 function ensureCanonicalOutputText(context, snapshot) {
+    if (context.deferOutputText) {
+        context.canonicalSnapshot = undefined;
+        return;
+    }
     if (context.canonicalSnapshot === snapshot) {
         return;
     }
@@ -17467,6 +21900,9 @@ function cloneResponse(context, response) {
     return snapshot;
 }
 function updateCachedOutputTextLength(context, output, outputIndex, previousText, nextText) {
+    if (context.deferOutputText) {
+        return;
+    }
     const length = context.outputTextLengths.get(output);
     if (length !== undefined) {
         const nextLength = length - previousText.length + nextText.length;
@@ -17510,6 +21946,10 @@ function updateOutputText(context, snapshot, outputIndex, previousText, nextText
     if (previousText === nextText) {
         return;
     }
+    if (context.deferOutputText) {
+        context.outputTextDirty = true;
+        return;
+    }
     const output = snapshot.output[outputIndex];
     if (outputIndex === snapshot.output.length - 1 &&
         (contentIndex === undefined || (output?.type === 'message' && contentIndex === output.content.length - 1))) {
@@ -17529,6 +21969,7 @@ function updateOutputText(context, snapshot, outputIndex, previousText, nextText
 }
 //# sourceMappingURL=canonical-output-text.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/responses/response-accumulator.mjs
+
 
 
 
@@ -17563,12 +22004,14 @@ function hasRoutedOutputCallIdentity(output) {
         output.type === 'shell_call_output');
 }
 function getOutputItemIdentityKeys(output, eventType) {
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
     if (!hasOwn(output, 'type') || typeof output.type !== 'string') {
         throw new error_OpenAIError(`expected an own output item type for ${eventType}`);
     }
     const optionalPlatformID = output.type === 'function_call' || output.type === 'custom_tool_call';
     const identities = [];
     if (hasOwn(output, 'id')) {
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
         if (typeof output.id !== 'string' || output.id.length === 0) {
             throw new error_OpenAIError(`expected a non-empty output item id for ${eventType}`);
         }
@@ -17578,6 +22021,7 @@ function getOutputItemIdentityKeys(output, eventType) {
         throw new error_OpenAIError(`expected a non-empty output item id for ${eventType}`);
     }
     if (hasRoutedOutputCallIdentity(output)) {
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
         if (!hasOwn(output, 'call_id') || typeof output.call_id !== 'string' || output.call_id.length === 0) {
             throw new error_OpenAIError(`expected a non-empty output item call_id for ${eventType}`);
         }
@@ -17674,6 +22118,7 @@ const expectedOutputItemTypes = {
     'response.mcp_list_tools.in_progress': 'mcp_list_tools',
     'response.mcp_list_tools.completed': 'mcp_list_tools',
     'response.mcp_list_tools.failed': 'mcp_list_tools',
+    'response.compaction.compacting': 'compaction',
 };
 function getExpectedOutputItemType(event) {
     if (event.type === 'response.content_part.added' || event.type === 'response.content_part.done') {
@@ -17720,7 +22165,9 @@ function validateOutputItemIdentity(event, snapshot, rejectInvalidShellTargets) 
         !hasOwn(expectedOutputItemTypes, event.type)) {
         return;
     }
+    // SAFETY: The event type was classified as item-scoped; the following checks validate its own item_id before use.
     const itemEvent = event;
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
     if (!hasOwn(event, 'item_id') || typeof itemEvent.item_id !== 'string' || itemEvent.item_id.length === 0) {
         throw new error_OpenAIError(`expected a non-empty item_id for ${event.type}`);
     }
@@ -17816,6 +22263,7 @@ const supportedResponseEventTypes = createSupportedResponseEventTypes([
     'response.audio.done',
     'response.audio.transcript.delta',
     'response.audio.transcript.done',
+    'response.compaction.compacting',
     'response.image_generation_call.partial_image',
     'response.mcp_list_tools.in_progress',
     'response.mcp_list_tools.completed',
@@ -17840,11 +22288,16 @@ function sanitizeResponseEvent(event) {
         descriptor = Object.getOwnPropertyDescriptor(event, 'type');
     }
     catch {
+        // SAFETY: assertNever always throws; the cast routes invalid runtime events through the existing unsupported-event error path.
         return response_accumulator_assertNever(event);
     }
     const type = descriptor?.value;
-    if (typeof type !== 'string' ||
+    // SAFETY: The string is used only as a Set lookup key; membership performs the supported-event check.
+    if (
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Validate untrusted streamed item identifiers and discriminators before mutating the response snapshot.
+    typeof type !== 'string' ||
         !supportedResponseEventTypes.has(type)) {
+        // SAFETY: assertNever always throws; the cast routes invalid runtime events through the existing unsupported-event error path.
         return response_accumulator_assertNever(event);
     }
     const stableValues = new Map([['type', type]]);
@@ -17860,21 +22313,23 @@ function sanitizeResponseEvent(event) {
         try {
             for (const field of responseEventRoutingFields) {
                 const routingDescriptor = Object.getOwnPropertyDescriptor(event, field);
-                stableValues.set(field, routingDescriptor ? Reflect.get(event, field, event) : undefined);
+                stableValues.set(field, routingDescriptor ? event[field] : undefined);
             }
             if (type === 'response.output_item.done') {
-                stableValues.set('item', structuredClone(Reflect.get(event, 'item', event)));
+                stableValues.set('item', structuredClone(event.item));
             }
             else if (type === 'response.content_part.added' || type === 'response.content_part.done') {
-                stableValues.set('part', structuredClone(Reflect.get(event, 'part', event)));
+                stableValues.set('part', structuredClone(event.part));
             }
         }
         catch {
+            // SAFETY: assertNever always throws; the cast routes invalid runtime events through the existing unsupported-event error path.
             return response_accumulator_assertNever(event);
         }
     }
     return new Proxy(event, {
         get(target, property) {
+            // oxlint-disable-next-line anti-slop/no-reflect-get -- Proxy forwarding must preserve arbitrary keys with the original target as accessor receiver.
             return stableValues.has(property) ? stableValues.get(property) : Reflect.get(target, property, target);
         },
     });
@@ -17898,7 +22353,12 @@ function accumulateOutputItemEvent(event, snapshot, context) {
                 context.outputTextIndex.append(text.length);
             }
             if (text) {
-                snapshot.output_text += text;
+                if (context.deferOutputText) {
+                    context.outputTextDirty = true;
+                }
+                else {
+                    snapshot.output_text += text;
+                }
             }
             return true;
         }
@@ -17987,6 +22447,42 @@ function accumulateContentPartDoneEvent(event, snapshot, context) {
         }
     }
 }
+// Streamed logprobs have a looser type than final output: bytes and even the
+// top token fields may be missing. Do not fabricate them in typed SSE snapshots.
+function isLogprobWithBytes(value) {
+    return (isObj(value) &&
+        typeof value['token'] === 'string' &&
+        typeof value['logprob'] === 'number' &&
+        Array.isArray(value['bytes']) &&
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- This boundary checks each byte against the generated final-output contract before exposing a typed SSE snapshot.
+        value['bytes'].every((byte) => typeof byte === 'number'));
+}
+function isOutputLogprobs(value) {
+    return (Array.isArray(value) &&
+        value.every((entry) => isLogprobWithBytes(entry) &&
+            'top_logprobs' in entry &&
+            Array.isArray(entry.top_logprobs) &&
+            entry.top_logprobs.every(isLogprobWithBytes)));
+}
+function accumulateOutputLogprobs(content, event) {
+    const logprobs = structuredClone(event.logprobs);
+    if (!isOutputLogprobs(logprobs)) {
+        return;
+    }
+    if (event.type === 'response.output_text.done') {
+        if (logprobs.length > 0 || (Array.isArray(content.logprobs) && content.logprobs.length > 0)) {
+            content.logprobs = logprobs;
+        }
+    }
+    else if (logprobs.length > 0) {
+        if (!Array.isArray(content.logprobs)) {
+            content.logprobs = [];
+        }
+        for (const logprob of logprobs) {
+            content.logprobs.push(logprob);
+        }
+    }
+}
 function accumulateOutputTextEvent(event, snapshot, context) {
     switch (event.type) {
         case 'response.output_text.delta': {
@@ -17996,13 +22492,21 @@ function accumulateOutputTextEvent(event, snapshot, context) {
                 if (content.type !== 'output_text') {
                     throw new error_OpenAIError(`expected content to be 'output_text', got ${content.type}`);
                 }
+                accumulateOutputLogprobs(content, event);
                 const previousText = content.text;
                 ensureCanonicalOutputText(context, snapshot);
                 content.text = previousText + event.delta;
                 updateCachedOutputTextLength(context, output, event.output_index, previousText, content.text);
                 if (event.output_index === snapshot.output.length - 1 &&
                     event.content_index === output.content.length - 1) {
-                    snapshot.output_text += event.delta;
+                    if (context.deferOutputText) {
+                        if (event.delta !== '') {
+                            context.outputTextDirty = true;
+                        }
+                    }
+                    else {
+                        snapshot.output_text += event.delta;
+                    }
                 }
                 else {
                     updateOutputText(context, snapshot, event.output_index, previousText, content.text, event.content_index);
@@ -18017,6 +22521,7 @@ function accumulateOutputTextEvent(event, snapshot, context) {
                 if (content.type !== 'output_text') {
                     throw new error_OpenAIError(`expected content to be 'output_text', got ${content.type}`);
                 }
+                accumulateOutputLogprobs(content, event);
                 const previousText = content.text;
                 ensureCanonicalOutputText(context, snapshot);
                 content.text = event.text;
@@ -18033,6 +22538,7 @@ function accumulateOutputTextEvent(event, snapshot, context) {
                     throw new error_OpenAIError(`expected content to be 'output_text', got ${content.type}`);
                 }
                 validateArrayIndex(content.annotations, event.annotation_index, 'annotation', true);
+                // SAFETY: The output_text discriminator and annotation index were checked; the annotation is cloned from the corresponding API event contract.
                 content.annotations[event.annotation_index] = structuredClone(event.annotation);
             }
             return true;
@@ -18384,6 +22890,7 @@ function isIgnoredResponseEvent(event) {
         case 'response.audio.done':
         case 'response.audio.transcript.delta':
         case 'response.audio.transcript.done':
+        case 'response.compaction.compacting':
         case 'response.image_generation_call.partial_image':
         case 'response.mcp_list_tools.in_progress':
         case 'response.mcp_list_tools.completed':
@@ -18400,6 +22907,57 @@ function isIgnoredResponseEvent(event) {
 function createResponseContext() {
     return createCanonicalResponseContext();
 }
+function accumulateResponseOutput(dispatchEvent, snapshot, context, rejectInvalidShellTargets) {
+    validateOutputItemIdentity(dispatchEvent, snapshot, rejectInvalidShellTargets);
+    if (accumulateOutputItemEvent(dispatchEvent, snapshot, context)) {
+        return true;
+    }
+    if (accumulateContentPartAddedEvent(dispatchEvent, snapshot, context)) {
+        return true;
+    }
+    if (accumulateContentPartDoneEvent(dispatchEvent, snapshot, context)) {
+        return true;
+    }
+    if (accumulateOutputTextEvent(dispatchEvent, snapshot, context)) {
+        return true;
+    }
+    if (accumulateRefusalAndArgumentsEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (accumulateShellEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (accumulateReasoningEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (accumulateCodeInterpreterEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (accumulateSearchStatusEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (accumulateImageAndMcpStatusEvent(dispatchEvent, snapshot)) {
+        return true;
+    }
+    if (isIgnoredResponseEvent(dispatchEvent)) {
+        return true;
+    }
+    return false;
+}
+/** Matches shared events that can change output. Validation still occurs before mutation. */
+function isResponseOutputEvent(event) {
+    // SAFETY: Membership of the existing SSE tag set is checked before using shared output validators.
+    return (supportedResponseEventTypes.has(event.type) &&
+        !isResponseLifecycleEvent(event) &&
+        !isIgnoredResponseEvent(event));
+}
+/** Applies the same strict output validation and mutations without requiring response metadata. */
+function accumulateWebSocketOutput(event, snapshot, context) {
+    const dispatchEvent = sanitizeResponseEvent(event);
+    if (!accumulateResponseOutput(dispatchEvent, snapshot, context, true)) {
+        throw new OpenAIError('Unsupported WebSocket output event');
+    }
+}
 function accumulateResponseWithContext(event, snapshot, context, rejectInvalidShellTargets = false, onSanitizedEvent) {
     const dispatchEvent = sanitizeResponseEvent(event);
     if (onSanitizedEvent && dispatchEvent.type !== 'keepalive') {
@@ -18411,42 +22969,11 @@ function accumulateResponseWithContext(event, snapshot, context, rejectInvalidSh
         }
         return cloneValidatedResponse(context, dispatchEvent.response);
     }
-    validateOutputItemIdentity(dispatchEvent, snapshot, rejectInvalidShellTargets);
-    if (accumulateOutputItemEvent(dispatchEvent, snapshot, context)) {
-        return snapshot;
-    }
-    if (accumulateContentPartAddedEvent(dispatchEvent, snapshot, context)) {
-        return snapshot;
-    }
-    if (accumulateContentPartDoneEvent(dispatchEvent, snapshot, context)) {
-        return snapshot;
-    }
-    if (accumulateOutputTextEvent(dispatchEvent, snapshot, context)) {
-        return snapshot;
-    }
-    if (accumulateRefusalAndArgumentsEvent(dispatchEvent, snapshot)) {
-        return snapshot;
-    }
-    if (accumulateShellEvent(dispatchEvent, snapshot)) {
-        return snapshot;
-    }
-    if (accumulateReasoningEvent(dispatchEvent, snapshot)) {
-        return snapshot;
-    }
-    if (accumulateCodeInterpreterEvent(dispatchEvent, snapshot)) {
-        return snapshot;
-    }
-    if (accumulateSearchStatusEvent(dispatchEvent, snapshot)) {
-        return snapshot;
-    }
-    if (accumulateImageAndMcpStatusEvent(dispatchEvent, snapshot)) {
+    if (accumulateResponseOutput(dispatchEvent, snapshot, context, rejectInvalidShellTargets)) {
         return snapshot;
     }
     if (isResponseLifecycleEvent(dispatchEvent)) {
         return cloneValidatedResponse(context, dispatchEvent.response);
-    }
-    if (isIgnoredResponseEvent(dispatchEvent)) {
-        return snapshot;
     }
     return response_accumulator_assertNever(dispatchEvent);
 }
@@ -18473,6 +23000,7 @@ class ResponseStream extends EventStream {
     }
     /** Starts a new response stream or replays an existing response by its identifier. */
     static createResponse(client, params, options) {
+        // SAFETY: The runner's request path forces stream: true; the constructor retains the same caller parameters for parsing metadata.
         const runner = new ResponseStream(params);
         runner._run(() => runner._createOrRetrieveResponse(client, params, {
             ...options,
@@ -18505,7 +23033,7 @@ class ResponseStream extends EventStream {
             __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_addEvent).call(this, event, starting_after);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_endRequest).call(this);
     }
@@ -18518,7 +23046,7 @@ class ResponseStream extends EventStream {
             __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_addEvent).call(this, event, null);
         }
         if (stream.controller.signal?.aborted) {
-            throw new APIUserAbortError();
+            throw this._userAbortError();
         }
         return __classPrivateFieldGet(this, _ResponseStream_instances, "m", _ResponseStream_endRequest).call(this);
     }
@@ -18535,13 +23063,16 @@ class ResponseStream extends EventStream {
         }
         const maybeEmit = (name, event) => {
             if (starting_after == null || event.sequence_number > starting_after) {
+                // SAFETY: The caller derives the event name from the dispatched event discriminator; this bridge preserves the corresponding payload.
                 this._emit(name, event);
             }
         };
         if (event.type === 'error') {
             // First-party providers nest their error payload; retain flat compatibility for
             // serialized events matching the currently published event schema.
-            const error = 'error' in event && typeof event.error === 'object' && event.error !== null ? event.error : event;
+            const error = 
+            // oxlint-disable-next-line anti-slop/no-runtime-typeof -- An error event can contain malformed server data; validate its container before extracting error details.
+            'error' in event && typeof event.error === 'object' && event.error !== null ? event.error : event;
             throw new APIError(undefined, error, event.message, undefined);
         }
         let dispatchEvent = event;
@@ -18640,28 +23171,89 @@ function finalizeResponse(snapshot, params) {
 
 
 
+function responses_input_items_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const responses_input_items_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function responses_input_items_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => responses_input_items_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !responses_input_items_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+/**
+ * Create and manage model responses.
+ */
 class input_items_InputItems extends APIResource {
-    /**
-     * Returns a list of input items for a given response.
-     *
-     * @example
-     * ```ts
-     * // Automatically fetches more pages as needed.
-     * for await (const responseItem of client.responses.inputItems.list(
-     *   'response_id',
-     * )) {
-     *   // ...
-     * }
-     * ```
-     */
     list(responseID, query = {}, options) {
-        return this._client.getAPIList(path `/responses/${responseID}/input_items`, (CursorPage), { query, ...options, __security: { bearerAuth: true } });
+        const normalizeRequestOptionsForQueryOptions = responses_input_items_normalizeRequestOptionsForQuery(query, ['after', 'include', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/responses/${responseID}/input_items`, (CursorPage), responses_input_items_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 //# sourceMappingURL=input-items.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/responses/input-tokens.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
+function responses_input_tokens_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+/**
+ * Create and manage model responses.
+ */
 class input_tokens_InputTokens extends APIResource {
     /**
      * Returns input token counts of the request.
@@ -18675,11 +23267,11 @@ class input_tokens_InputTokens extends APIResource {
      * ```
      */
     count(body = {}, options) {
-        return this._client.post('/responses/input_tokens', {
+        return this._client.post('/responses/input_tokens', responses_input_tokens_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=input-tokens.mjs.map
@@ -18694,6 +23286,64 @@ class input_tokens_InputTokens extends APIResource {
 
 
 
+function responses_responses_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const responses_responses_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function responses_responses_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => responses_responses_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !responses_responses_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
+/**
+ * Create and manage model responses.
+ */
 class responses_Responses extends APIResource {
     constructor() {
         super(...arguments);
@@ -18701,12 +23351,12 @@ class responses_Responses extends APIResource {
         this.inputTokens = new input_tokens_InputTokens(this._client);
     }
     create(body, options) {
-        return this._client.post('/responses', {
+        return this._client.post('/responses', responses_responses_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             stream: body.stream ?? false,
             __security: { bearerAuth: true },
-        })._thenUnwrap((rsp) => {
+        })))._thenUnwrap((rsp) => {
             if ('object' in rsp && rsp.object === 'response') {
                 addOutputText(rsp);
             }
@@ -18714,12 +23364,18 @@ class responses_Responses extends APIResource {
         });
     }
     retrieve(responseID, query = {}, options) {
-        return this._client.get(path `/responses/${responseID}`, {
+        const normalizeRequestOptionsForQueryOptions = responses_responses_normalizeRequestOptionsForQuery(query, ['include', 'include_obfuscation', 'starting_after', 'stream'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.get(path `/responses/${responseID}`, responses_responses_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             stream: query?.stream ?? false,
             __security: { bearerAuth: true },
-        })._thenUnwrap((rsp) => {
+        })))._thenUnwrap((rsp) => {
             if ('object' in rsp && rsp.object === 'response') {
                 addOutputText(rsp);
             }
@@ -18737,11 +23393,11 @@ class responses_Responses extends APIResource {
      * ```
      */
     delete(responseID, options) {
-        return this._client.delete(path `/responses/${responseID}`, {
+        return this._client.delete(path `/responses/${responseID}`, responses_responses_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: '*/*' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     parse(body, options) {
         return this._client.responses
@@ -18767,10 +23423,7 @@ class responses_Responses extends APIResource {
      * ```
      */
     cancel(responseID, options) {
-        return this._client.post(path `/responses/${responseID}/cancel`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/responses/${responseID}/cancel`, responses_responses_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Compact a conversation. Returns a compacted response object.
@@ -18788,7 +23441,11 @@ class responses_Responses extends APIResource {
      * ```
      */
     compact(body, options) {
-        return this._client.post('/responses/compact', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/responses/compact', responses_responses_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
 }
 responses_Responses.InputItems = input_items_InputItems;
@@ -18798,26 +23455,49 @@ responses_Responses.InputTokens = input_tokens_InputTokens;
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 
 
+function alerts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class Alerts extends APIResource {
     /**
      * Get a safety alert belonging to the authenticated API project.
      */
     retrieve(id, options) {
-        return this._client.get(path `/safety/alerts/${id}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/safety/alerts/${id}`, alerts_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 //# sourceMappingURL=alerts.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/safety/cases.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
+function cases_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class Cases extends APIResource {
+    /**
+     * Get a safety case by ID.
+     */
+    retrieve(id, options) {
+        return this._client.get(path `/safety/cases/${id}`, cases_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+}
+//# sourceMappingURL=cases.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/safety/safety.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+
 
 
 
 class Safety extends APIResource {
     constructor() {
         super(...arguments);
+        this.cases = new Cases(this._client);
         this.alerts = new Alerts(this._client);
     }
 }
+Safety.Cases = Cases;
 Safety.Alerts = Alerts;
 //# sourceMappingURL=safety.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/skills/content.mjs
@@ -18825,17 +23505,20 @@ Safety.Alerts = Alerts;
 
 
 
+function skills_content_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class content_Content extends APIResource {
     /**
      * Download a skill zip bundle by its ID.
      */
     retrieve(skillID, options) {
-        return this._client.get(path `/skills/${skillID}/content`, {
+        return this._client.get(path `/skills/${skillID}/content`, skills_content_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
 }
 //# sourceMappingURL=content.mjs.map
@@ -18844,18 +23527,21 @@ class content_Content extends APIResource {
 
 
 
+function versions_content_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class versions_content_Content extends APIResource {
     /**
      * Download a skill version zip bundle.
      */
     retrieve(version, params, options) {
         const { skill_id } = params;
-        return this._client.get(path `/skills/${skill_id}/versions/${version}/content`, {
+        return this._client.get(path `/skills/${skill_id}/versions/${version}/content`, versions_content_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
 }
 //# sourceMappingURL=content.mjs.map
@@ -18867,6 +23553,61 @@ class versions_content_Content extends APIResource {
 
 
 
+function versions_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const versions_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function versions_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => versions_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !versions_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Versions extends APIResource {
     constructor() {
         super(...arguments);
@@ -18885,30 +23626,27 @@ class Versions extends APIResource {
      */
     retrieve(version, params, options) {
         const { skill_id } = params;
-        return this._client.get(path `/skills/${skill_id}/versions/${version}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/skills/${skill_id}/versions/${version}`, versions_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List skill versions for a skill.
-     */
     list(skillID, query = {}, options) {
-        return this._client.getAPIList(path `/skills/${skillID}/versions`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = versions_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/skills/${skillID}/versions`, (CursorPage), versions_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a skill version.
      */
     delete(version, params, options) {
         const { skill_id } = params;
-        return this._client.delete(path `/skills/${skill_id}/versions/${version}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.delete(path `/skills/${skill_id}/versions/${version}`, versions_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Versions.Content = versions_content_Content;
@@ -18923,6 +23661,61 @@ Versions.Content = versions_content_Content;
 
 
 
+function skills_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const skills_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function skills_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => skills_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !skills_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Skills extends APIResource {
     constructor() {
         super(...arguments);
@@ -18941,33 +23734,36 @@ class Skills extends APIResource {
      * Get a skill by its ID.
      */
     retrieve(skillID, options) {
-        return this._client.get(path `/skills/${skillID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/skills/${skillID}`, skills_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Update the default version pointer for a skill.
      */
     update(skillID, body, options) {
-        return this._client.post(path `/skills/${skillID}`, {
+        return this._client.post(path `/skills/${skillID}`, skills_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * List all skills for the current project.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/skills', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = skills_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/skills', (CursorPage), skills_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a skill by its ID.
      */
     delete(skillID, options) {
-        return this._client.delete(path `/skills/${skillID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.delete(path `/skills/${skillID}`, skills_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
 }
 Skills.Content = content_Content;
@@ -18978,6 +23774,9 @@ Skills.Versions = Versions;
 
 
 
+function parts_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Use Uploads to upload large files in multiple parts.
  */
@@ -18997,7 +23796,7 @@ class Parts extends APIResource {
      * [complete the Upload](https://developers.openai.com/api/reference/resources/uploads/methods/complete).
      */
     create(uploadID, body, options) {
-        return this._client.post(path `/uploads/${uploadID}/parts`, multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post(path `/uploads/${uploadID}/parts`, parts_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
 }
 //# sourceMappingURL=parts.mjs.map
@@ -19007,6 +23806,9 @@ class Parts extends APIResource {
 
 
 
+function uploads_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 /**
  * Use Uploads to upload large files in multiple parts.
  */
@@ -19039,7 +23841,11 @@ class Uploads extends APIResource {
      * Returns the Upload object with status `pending`.
      */
     create(body, options) {
-        return this._client.post('/uploads', { body, ...options, __security: { bearerAuth: true } });
+        return this._client.post('/uploads', uploads_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Cancels the Upload. No Parts may be added after an Upload is cancelled.
@@ -19047,10 +23853,7 @@ class Uploads extends APIResource {
      * Returns the Upload object with status `cancelled`.
      */
     cancel(uploadID, options) {
-        return this._client.post(path `/uploads/${uploadID}/cancel`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.post(path `/uploads/${uploadID}/cancel`, uploads_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Completes the
@@ -19070,11 +23873,11 @@ class Uploads extends APIResource {
      * object.
      */
     complete(uploadID, body, options) {
-        return this._client.post(path `/uploads/${uploadID}/complete`, {
+        return this._client.post(path `/uploads/${uploadID}/complete`, uploads_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 Uploads.Parts = Parts;
@@ -19173,28 +23976,31 @@ async function uploadAndPollVectorStoreFileBatch(resource, client, vectorStoreId
 
 
 
+function file_batches_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
 class FileBatches extends APIResource {
     /**
      * Create a vector store file batch.
      */
     create(vectorStoreID, body, options) {
-        return this._client.post(path `/vector_stores/${vectorStoreID}/file_batches`, {
+        return this._client.post(path `/vector_stores/${vectorStoreID}/file_batches`, file_batches_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a vector store file batch.
      */
     retrieve(batchID, params, options) {
         const { vector_store_id } = params;
-        return this._client.get(path `/vector_stores/${vector_store_id}/file_batches/${batchID}`, {
+        return this._client.get(path `/vector_stores/${vector_store_id}/file_batches/${batchID}`, file_batches_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Cancel a vector store file batch. This attempts to cancel the processing of
@@ -19202,11 +24008,11 @@ class FileBatches extends APIResource {
      */
     cancel(batchID, params, options) {
         const { vector_store_id } = params;
-        return this._client.post(path `/vector_stores/${vector_store_id}/file_batches/${batchID}/cancel`, {
+        return this._client.post(path `/vector_stores/${vector_store_id}/file_batches/${batchID}/cancel`, file_batches_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Create a vector store batch and poll until all files have been processed.
@@ -19220,12 +24026,12 @@ class FileBatches extends APIResource {
      */
     listFiles(batchID, params, options) {
         const { vector_store_id, ...query } = params;
-        return this._client.getAPIList(path `/vector_stores/${vector_store_id}/file_batches/${batchID}/files`, (CursorPage), {
+        return this._client.getAPIList(path `/vector_stores/${vector_store_id}/file_batches/${batchID}/files`, (CursorPage), file_batches_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Wait for the given file batch to be processed.
@@ -19253,6 +24059,61 @@ class FileBatches extends APIResource {
 
 
 
+function vector_stores_files_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const vector_stores_files_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function vector_stores_files_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => vector_stores_files_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !vector_stores_files_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class vector_stores_files_Files extends APIResource {
     /**
      * Create a vector store file by attaching a
@@ -19260,46 +24121,49 @@ class vector_stores_files_Files extends APIResource {
      * [vector store](https://developers.openai.com/api/reference/resources/vector_stores).
      */
     create(vectorStoreID, body, options) {
-        return this._client.post(path `/vector_stores/${vectorStoreID}/files`, {
+        return this._client.post(path `/vector_stores/${vectorStoreID}/files`, vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a vector store file.
      */
     retrieve(fileID, params, options) {
         const { vector_store_id } = params;
-        return this._client.get(path `/vector_stores/${vector_store_id}/files/${fileID}`, {
+        return this._client.get(path `/vector_stores/${vector_store_id}/files/${fileID}`, vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Update attributes on a vector store file.
      */
     update(fileID, params, options) {
         const { vector_store_id, ...body } = params;
-        return this._client.post(path `/vector_stores/${vector_store_id}/files/${fileID}`, {
+        return this._client.post(path `/vector_stores/${vector_store_id}/files/${fileID}`, vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of vector store files.
-     */
     list(vectorStoreID, query = {}, options) {
-        return this._client.getAPIList(path `/vector_stores/${vectorStoreID}/files`, (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = vector_stores_files_normalizeRequestOptionsForQuery(query, ['after', 'before', 'filter', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList(path `/vector_stores/${vectorStoreID}/files`, (CursorPage), vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a vector store file. This will remove the file from the vector store but
@@ -19309,11 +24173,11 @@ class vector_stores_files_Files extends APIResource {
      */
     delete(fileID, params, options) {
         const { vector_store_id } = params;
-        return this._client.delete(path `/vector_stores/${vector_store_id}/files/${fileID}`, {
+        return this._client.delete(path `/vector_stores/${vector_store_id}/files/${fileID}`, vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Attach a file to the given vector store and wait for it to be processed.
@@ -19353,11 +24217,11 @@ class vector_stores_files_Files extends APIResource {
      */
     content(fileID, params, options) {
         const { vector_store_id } = params;
-        return this._client.getAPIList(path `/vector_stores/${vector_store_id}/files/${fileID}/content`, (Page), {
+        return this._client.getAPIList(path `/vector_stores/${vector_store_id}/files/${fileID}/content`, (Page), vector_stores_files_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 //# sourceMappingURL=files.mjs.map
@@ -19371,6 +24235,61 @@ class vector_stores_files_Files extends APIResource {
 
 
 
+function vector_stores_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const vector_stores_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function vector_stores_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => vector_stores_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !vector_stores_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class VectorStores extends APIResource {
     constructor() {
         super(...arguments);
@@ -19381,67 +24300,70 @@ class VectorStores extends APIResource {
      * Create a vector store.
      */
     create(body, options) {
-        return this._client.post('/vector_stores', {
+        return this._client.post('/vector_stores', vector_stores_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Retrieves a vector store.
      */
     retrieve(vectorStoreID, options) {
-        return this._client.get(path `/vector_stores/${vectorStoreID}`, {
+        return this._client.get(path `/vector_stores/${vectorStoreID}`, vector_stores_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Modifies a vector store.
      */
     update(vectorStoreID, body, options) {
-        return this._client.post(path `/vector_stores/${vectorStoreID}`, {
+        return this._client.post(path `/vector_stores/${vectorStoreID}`, vector_stores_resolveResourceRequestOptions(options, (options) => ({
             body,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
-    /**
-     * Returns a list of vector stores.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/vector_stores', (CursorPage), {
+        const normalizeRequestOptionsForQueryOptions = vector_stores_normalizeRequestOptionsForQuery(query, ['after', 'before', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/vector_stores', (CursorPage), vector_stores_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Delete a vector store.
      */
     delete(vectorStoreID, options) {
-        return this._client.delete(path `/vector_stores/${vectorStoreID}`, {
+        return this._client.delete(path `/vector_stores/${vectorStoreID}`, vector_stores_resolveResourceRequestOptions(options, (options) => ({
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Search a vector store for relevant chunks based on a query and file attributes
      * filter.
      */
     search(vectorStoreID, body, options) {
-        return this._client.getAPIList(path `/vector_stores/${vectorStoreID}/search`, (Page), {
+        return this._client.getAPIList(path `/vector_stores/${vectorStoreID}/search`, (Page), vector_stores_resolveResourceRequestOptions(options, (options) => ({
             body,
             method: 'post',
             ...options,
             headers: buildHeaders([{ 'OpenAI-Beta': 'assistants=v2' }, options?.headers]),
             __security: { bearerAuth: true },
-        });
+        })));
     }
 }
 VectorStores.Files = vector_stores_files_Files;
@@ -19454,6 +24376,61 @@ VectorStores.FileBatches = FileBatches;
 
 
 
+function videos_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const videos_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function videos_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => videos_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !videos_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 /**
  * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
  */
@@ -19464,7 +24441,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     create(body, options) {
-        return this._client.post('/videos', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/videos', videos_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Fetch the latest metadata for a generated video.
@@ -19472,19 +24449,20 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     retrieve(videoID, options) {
-        return this._client.get(path `/videos/${videoID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.get(path `/videos/${videoID}`, videos_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
-    /**
-     * List recently generated videos for the current project.
-     *
-     * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
-     */
     list(query = {}, options) {
-        return this._client.getAPIList('/videos', (ConversationCursorPage), {
+        const normalizeRequestOptionsForQueryOptions = videos_normalizeRequestOptionsForQuery(query, ['after', 'limit', 'order'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/videos', (ConversationCursorPage), videos_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             __security: { bearerAuth: true },
-        });
+        })));
     }
     /**
      * Permanently delete a completed or failed video and its stored assets.
@@ -19492,7 +24470,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     delete(videoID, options) {
-        return this._client.delete(path `/videos/${videoID}`, { ...options, __security: { bearerAuth: true } });
+        return this._client.delete(path `/videos/${videoID}`, videos_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Create a character from an uploaded video.
@@ -19500,23 +24478,22 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     createCharacter(body, options) {
-        return this._client.post('/videos/characters', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/videos/characters', videos_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
-    /**
-     * Download the generated video bytes or a derived preview asset.
-     *
-     * Streams the rendered video content for the specified video job.
-     *
-     * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
-     */
     downloadContent(videoID, query = {}, options) {
-        return this._client.get(path `/videos/${videoID}/content`, {
+        const normalizeRequestOptionsForQueryOptions = videos_normalizeRequestOptionsForQuery(query, ['variant'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.get(path `/videos/${videoID}/content`, videos_resolveResourceRequestOptions(options, (options) => ({
             query,
             ...options,
             headers: buildHeaders([{ Accept: 'application/binary' }, options?.headers]),
             __security: { bearerAuth: true },
             __binaryResponse: true,
-        });
+        })));
     }
     /**
      * Create a new video generation job by editing a source video or existing
@@ -19525,7 +24502,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     edit(body, options) {
-        return this._client.post('/videos/edits', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/videos/edits', videos_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Create an extension of a completed video.
@@ -19533,7 +24510,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     extend(body, options) {
-        return this._client.post('/videos/extensions', multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post('/videos/extensions', videos_resolveResourceRequestOptions(options, (options) => multipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
     /**
      * Fetch a character.
@@ -19541,10 +24518,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     getCharacter(characterID, options) {
-        return this._client.get(path `/videos/characters/${characterID}`, {
-            ...options,
-            __security: { bearerAuth: true },
-        });
+        return this._client.get(path `/videos/characters/${characterID}`, videos_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
     }
     /**
      * Create a remix of a completed video using a refreshed prompt.
@@ -19552,7 +24526,7 @@ class Videos extends APIResource {
      * @deprecated The Sora API is scheduled to permanently shut down on September 24, 2026.
      */
     remix(videoID, body, options) {
-        return this._client.post(path `/videos/${videoID}/remix`, maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client));
+        return this._client.post(path `/videos/${videoID}/remix`, videos_resolveResourceRequestOptions(options, (options) => maybeMultipartFormRequestOptions({ body, ...options, __security: { bearerAuth: true } }, this._client)));
     }
 }
 //# sourceMappingURL=videos.mjs.map
@@ -19678,6 +24652,27 @@ async function verifyWebhookSignature(payload, signatureHeader, timestamp, webho
     throw new InvalidWebhookSignatureError('The given webhook signature does not match the expected signature');
 }
 //# sourceMappingURL=webhook-signature.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/resources/webhooks/event-types.mjs
+// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
+
+function event_types_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+class EventTypes extends APIResource {
+    /**
+     * Returns webhook event types visible to the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEventTypeList =
+     *   await client.webhooks.eventTypes.list();
+     * ```
+     */
+    list(options) {
+        return this._client.get('/webhook_event_types', event_types_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+}
+//# sourceMappingURL=event-types.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/webhooks/webhooks.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
 var _Webhooks_instances, _Webhooks_validateSecret, _Webhooks_getRequiredHeader;
@@ -19685,10 +24680,178 @@ var _Webhooks_instances, _Webhooks_validateSecret, _Webhooks_getRequiredHeader;
 
 
 
+
+
+
+
+function webhooks_resolveResourceRequestOptions(options, buildOptions) {
+    return Promise.resolve(options).then(buildOptions);
+}
+// Recognizable options across SDK runtime versions. Keep this independent of
+// private RequestOptions fields so older handwritten runtimes still compile.
+const webhooks_normalizeRequestOptionsForQueryKeys = new Set([
+    'method',
+    'path',
+    'query',
+    'body',
+    'headers',
+    'maxRetries',
+    'stream',
+    'timeout',
+    'httpAgent',
+    'fetchOptions',
+    'signal',
+    'idempotencyKey',
+    'defaultBaseURL',
+    '__metadata',
+    '__binaryRequest',
+    '__binaryResponse',
+    '__streamClass',
+    '__security',
+    '__synthesizeEventData',
+]);
+function webhooks_normalizeRequestOptionsForQuery(value, queryKeys, options) {
+    if (typeof value !== 'object' || value === null)
+        return undefined;
+    // Optional never fields can still be explicitly undefined unless consumers
+    // enable exactOptionalPropertyTypes. Snapshot data without invoking getters.
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value)).filter(([, descriptor]) => descriptor.enumerable && (!('value' in descriptor) || descriptor.value !== undefined));
+    const keys = entries.map(([key]) => key);
+    const requestOnly = keys.some((key) => webhooks_normalizeRequestOptionsForQueryKeys.has(key) && !queryKeys.includes(key));
+    if (!requestOnly)
+        return undefined;
+    // Declared query fields, including stream, must use the query argument.
+    // Mixing them with request-only options is ambiguous and could change the return type.
+    if (options !== undefined ||
+        keys.some((key) => !webhooks_normalizeRequestOptionsForQueryKeys.has(key) || queryKeys.includes(key))) {
+        throw new TypeError('Query parameters and request options must be passed as separate arguments.');
+    }
+    // The query position must not gain authority to change the request destination
+    // or transport. Those overrides require the explicit request options argument.
+    if (keys.some((key) => !['headers', 'maxRetries', 'timeout', 'signal', 'idempotencyKey', 'query'].includes(key))) {
+        throw new TypeError('Pass transport overrides in the explicit request options argument.');
+    }
+    // Copy only the validated fields. Spreading value would reintroduce undefined
+    // transport overrides, and deleting them would mutate the caller's object.
+    return Object.fromEntries(entries.map(([key, descriptor]) => {
+        if ('value' in descriptor)
+            return [key, descriptor.value];
+        return [key, descriptor.get ? Reflect.apply(descriptor.get, value, []) : undefined];
+    }));
+}
 class Webhooks extends APIResource {
     constructor() {
         super(...arguments);
         _Webhooks_instances.add(this);
+        this.eventTypes = new EventTypes(this._client);
+    }
+    /**
+     * Creates a webhook endpoint for the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEndpointWithSecret =
+     *   await client.webhooks.create({
+     *     event_types: ['batch.completed'],
+     *     name: 'x',
+     *     url: 'https://',
+     *   });
+     * ```
+     */
+    create(body, options) {
+        return this._client.post('/webhook_endpoints', webhooks_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Retrieves a webhook endpoint for the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEndpoint = await client.webhooks.retrieve(
+     *   'whe_123',
+     * );
+     * ```
+     */
+    retrieve(webhookEndpointID, options) {
+        return this._client.get(path `/webhook_endpoints/${webhookEndpointID}`, webhooks_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+    /**
+     * Updates a webhook endpoint for the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEndpoint = await client.webhooks.update('whe_123');
+     * ```
+     */
+    update(webhookEndpointID, body = {}, options) {
+        return this._client.post(path `/webhook_endpoints/${webhookEndpointID}`, webhooks_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    list(query = {}, options) {
+        const normalizeRequestOptionsForQueryOptions = webhooks_normalizeRequestOptionsForQuery(query, ['after', 'limit'], options);
+        if (normalizeRequestOptionsForQueryOptions !== undefined) {
+            options = normalizeRequestOptionsForQueryOptions;
+            query = {};
+        }
+        query = query;
+        return this._client.getAPIList('/webhook_endpoints', (CursorPage), webhooks_resolveResourceRequestOptions(options, (options) => ({
+            query,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Deletes a webhook endpoint for the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const deletedWebhookEndpoint = await client.webhooks.delete(
+     *   'whe_123',
+     * );
+     * ```
+     */
+    delete(webhookEndpointID, options) {
+        return this._client.delete(path `/webhook_endpoints/${webhookEndpointID}`, webhooks_resolveResourceRequestOptions(options, (options) => ({ ...options, __security: { bearerAuth: true } })));
+    }
+    /**
+     * Rotates the signing secret for a webhook endpoint in the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEndpointWithSecret =
+     *   await client.webhooks.rotateSecret('whe_123');
+     * ```
+     */
+    rotateSecret(webhookEndpointID, body = {}, options) {
+        return this._client.post(path `/webhook_endpoints/${webhookEndpointID}/rotate_secret`, webhooks_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
+    }
+    /**
+     * Sends a sample event to a webhook endpoint for the authenticated project.
+     *
+     * @example
+     * ```ts
+     * const webhookEndpointTestResult =
+     *   await client.webhooks.test('whe_123', {
+     *     event_type: 'batch.completed',
+     *   });
+     * ```
+     */
+    test(webhookEndpointID, body, options) {
+        return this._client.post(path `/webhook_endpoints/${webhookEndpointID}/test`, webhooks_resolveResourceRequestOptions(options, (options) => ({
+            body,
+            ...options,
+            __security: { bearerAuth: true },
+        })));
     }
     /**
      * Validates that the given payload was sent by OpenAI and parses the payload.
@@ -19738,14 +24901,7 @@ _Webhooks_instances = new WeakSet(), _Webhooks_validateSecret = function _Webhoo
     }
     return value;
 };
-//# sourceMappingURL=webhooks.mjs.map
-;// CONCATENATED MODULE: ./node_modules/openai/resources/webhooks/index.mjs
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-
-//# sourceMappingURL=index.mjs.map
-;// CONCATENATED MODULE: ./node_modules/openai/resources/webhooks.mjs
-// File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-
+Webhooks.EventTypes = EventTypes;
 //# sourceMappingURL=webhooks.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/resources/index.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
@@ -19776,7 +24932,881 @@ _Webhooks_instances = new WeakSet(), _Webhooks_validateSecret = function _Webhoo
 
 
 
+
 //# sourceMappingURL=index.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/internal/bedrock.mjs
+
+
+/** Identifies legacy Bedrock clients without importing the client class into WebSocket modules. */
+const brand_privateBedrockClient = Symbol.for('openai.privateBedrockClient');
+/** Wraps a provider failure in an SDK error while preserving its original cause. */
+function errorWithCause(message, cause) {
+    // SAFETY: This SDK error is created locally and receives its optional cause immediately below; no existing error shape is trusted.
+    const error = new Errors.OpenAIError(message);
+    error.cause = cause;
+    return error;
+}
+/** Trims a configuration string, treating missing and whitespace-only values as absent. */
+function normalizeOptionalString(value) {
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Bedrock credential and origin checks validate JavaScript configuration before any credential is sent.
+    const normalized = typeof value === 'string' ? value.trim() : undefined;
+    return normalized || undefined;
+}
+function normalizeBaseURL(baseURL) {
+    const url = new URL(baseURL);
+    const responsesMatch = url.pathname.match(/\/responses(?:\/.*)?$/);
+    if (responsesMatch?.index !== undefined) {
+        url.pathname = url.pathname.slice(0, responsesMatch.index) || '/';
+    }
+    return url.toString().replace(/\/$/, '');
+}
+function resolveRuntimeDnsSuffixes(region) {
+    if (region.startsWith('cn-')) {
+        return ['amazonaws.com.cn', 'api.amazonwebservices.com.cn'];
+    }
+    if (region.startsWith('eusc-')) {
+        return ['amazonaws.eu', 'api.amazonwebservices.eu'];
+    }
+    if (region.startsWith('us-iso-')) {
+        return ['c2s.ic.gov', 'api.aws.ic.gov'];
+    }
+    if (region.startsWith('us-isob-')) {
+        return ['sc2s.sgov.gov', 'api.aws.scloud'];
+    }
+    if (region.startsWith('eu-isoe-')) {
+        return ['cloud.adc-e.uk', 'api.cloud-aws.adc-e.uk'];
+    }
+    if (region.startsWith('us-isof-')) {
+        return ['csp.hci.ic.gov', 'api.aws.hci.ic.gov'];
+    }
+    return ['amazonaws.com', 'api.aws'];
+}
+/** Identifies a canonical Amazon Bedrock hostname and its embedded AWS region. */
+function parseBedrockEndpointHostname(hostname) {
+    const canonicalHostname = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+    const [service, region, ...suffixParts] = canonicalHostname.toLowerCase().split('.');
+    const suffix = suffixParts.join('.');
+    if (service === 'bedrock-mantle' && region && /^[a-z0-9-]+$/.test(region) && suffix === 'api.aws') {
+        return { endpoint: 'mantle', region };
+    }
+    if ((service === 'bedrock-runtime' || service === 'bedrock-runtime-fips') && region) {
+        const [standardSuffix, dualStackSuffix] = resolveRuntimeDnsSuffixes(region);
+        if (suffix === standardSuffix || suffix === dualStackSuffix) {
+            return { endpoint: 'runtime', region };
+        }
+    }
+    return undefined;
+}
+/** Rejects insecure or mismatched canonical Amazon Bedrock endpoint overrides. */
+function validateCanonicalBedrockEndpoint(baseURL, endpoint, region) {
+    const parsedBaseURL = new URL(baseURL);
+    const canonicalEndpoint = parseBedrockEndpointHostname(parsedBaseURL.hostname);
+    if (canonicalEndpoint && parsedBaseURL.protocol !== 'https:') {
+        throw new Errors.OpenAIError('Canonical Amazon Bedrock endpoints require HTTPS.');
+    }
+    if (canonicalEndpoint && canonicalEndpoint.endpoint !== endpoint) {
+        throw new Errors.OpenAIError(`The Bedrock ${canonicalEndpoint.endpoint} hostname does not match the selected \`${endpoint}\` endpoint. Set \`endpoint: '${canonicalEndpoint.endpoint}'\` to use this hostname.`);
+    }
+    if (canonicalEndpoint && region && canonicalEndpoint.region !== region) {
+        throw new Errors.OpenAIError(`The Bedrock endpoint region \`${canonicalEndpoint.region}\` does not match the configured AWS region \`${region}\`.`);
+    }
+}
+function validateBedrockEndpointSelection(endpoint) {
+    if (endpoint !== undefined && endpoint !== 'mantle' && endpoint !== 'runtime') {
+        throw new Errors.OpenAIError('The Bedrock `endpoint` must be either `mantle` or `runtime`.');
+    }
+}
+/**
+ * Resolves the Bedrock endpoint family, region, and API root from configuration.
+ *
+ * Region precedence is `region`, `AWS_REGION`, then `AWS_DEFAULT_REGION`.
+ * Endpoint precedence is `baseURL`, `AWS_BEDROCK_BASE_URL`, then the regional
+ * selected endpoint; an explicit `null` base URL skips the environment override.
+ * Existing `/responses` suffixes and trailing slashes are removed. Canonical
+ * AWS hostnames infer the endpoint family when none is selected explicitly.
+ * Other configured URLs and derived endpoints default to Mantle.
+ *
+ * @throws {Errors.OpenAIError} If an option is invalid, a canonical hostname
+ * conflicts with the endpoint family, or the default endpoint needs a region.
+ */
+function resolveBedrockEndpoint(options) {
+    validateBedrockEndpointSelection(options.endpoint);
+    if (options.region !== undefined && !normalizeOptionalString(options.region)) {
+        throw new Errors.OpenAIError('The Bedrock AWS `region` must not be empty.');
+    }
+    if (options.baseURL !== undefined &&
+        options.baseURL !== null &&
+        !normalizeOptionalString(options.baseURL)) {
+        throw new Errors.OpenAIError('The Bedrock `baseURL` must not be empty.');
+    }
+    const region = normalizeOptionalString(options.region) ??
+        normalizeOptionalString(readEnv('AWS_REGION')) ??
+        normalizeOptionalString(readEnv('AWS_DEFAULT_REGION'));
+    if (region && !/^[a-z]{2,8}(?:-[a-z0-9]+)+-\d+$/.test(region)) {
+        throw new Errors.OpenAIError('The Bedrock AWS `region` is invalid. Use a standard AWS region such as `us-east-1`.');
+    }
+    const configuredBaseURL = options.baseURL === undefined
+        ? normalizeOptionalString(readEnv('AWS_BEDROCK_BASE_URL'))
+        : normalizeOptionalString(options.baseURL);
+    if (configuredBaseURL) {
+        const baseURL = normalizeBaseURL(configuredBaseURL);
+        const endpoint = options.endpoint ?? parseBedrockEndpointHostname(new URL(baseURL).hostname)?.endpoint ?? 'mantle';
+        validateCanonicalBedrockEndpoint(baseURL, endpoint, region);
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- Preserve the declared endpoint resolver contract across configured URLs and inferred regions.
+        return { endpoint, region, baseURL };
+    }
+    const endpoint = options.endpoint ?? 'mantle';
+    if (!region) {
+        throw new Errors.OpenAIError('Bedrock requires an AWS region. Pass `region` to `bedrock(...)`, or set `AWS_REGION` or `AWS_DEFAULT_REGION`.');
+    }
+    const hostname = endpoint === 'runtime'
+        ? `bedrock-runtime.${region}.${resolveRuntimeDnsSuffixes(region)[0]}`
+        : `bedrock-mantle.${region}.api.aws`;
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The resolver intentionally returns its declared endpoint contract across all configuration paths.
+    return { endpoint, region, baseURL: `https://${hostname}/openai/v1` };
+}
+/**
+ * Ensures Bedrock credentials are only attached to the configured endpoint origin.
+ *
+ * @throws {Errors.OpenAIError} If either URL is not HTTP(S) or the request targets a different origin.
+ */
+function assertBedrockRequestOrigin(baseURL, requestURL) {
+    const expectedURL = new URL(baseURL);
+    const request = new URL(requestURL);
+    const expectedOrigin = expectedURL.origin;
+    const requestOrigin = request.origin;
+    if ((expectedURL.protocol !== 'http:' && expectedURL.protocol !== 'https:') ||
+        (request.protocol !== 'http:' && request.protocol !== 'https:') ||
+        requestOrigin !== expectedOrigin) {
+        throw new error_OpenAIError(`Bedrock request origin \`${requestOrigin}\` does not match the configured base URL origin \`${expectedOrigin}\`.`);
+    }
+}
+/** Validates a final WebSocket URL before a legacy Bedrock client resolves or attaches credentials. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- The WebSocket authentication boundary verifies the caller client at runtime before trusting provider metadata.
+function assertBedrockWebSocketOrigin(client, requestURL) {
+    // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Bedrock credential and origin checks validate JavaScript configuration before any credential is sent.
+    if (typeof client !== 'object' || client === null || !(brand_privateBedrockClient in client)) {
+        return;
+    }
+    const normalizedRequestURL = new URL(requestURL);
+    if (normalizedRequestURL.protocol === 'wss:') {
+        normalizedRequestURL.protocol = 'https:';
+    }
+    else if (normalizedRequestURL.protocol === 'ws:') {
+        normalizedRequestURL.protocol = 'http:';
+    }
+    // SAFETY: The private Bedrock brand checked above identifies the client whose baseURL is validated against the finalized request origin.
+    assertBedrockRequestOrigin(
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- The private Bedrock client brand checked above identifies the client baseURL contract.
+    client.baseURL, normalizedRequestURL.toString());
+}
+/**
+ * Rejects caller-provided authorization headers that conflict with provider authentication.
+ *
+ * @throws {Errors.OpenAIError} If an `Authorization` header is already present.
+ */
+function assertProviderOwnsAuthorization(headers) {
+    if (headers.has('authorization')) {
+        throw new Errors.OpenAIError('Bedrock provider authentication cannot be combined with a custom `Authorization` header.');
+    }
+}
+/** Rejects non-HTTP field bytes without retaining or exposing a bearer credential. */
+function assertValidBedrockBearerCredential(credential) {
+    if (/^[\t ]|[\t ]$/.test(credential)) {
+        throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
+    }
+    for (const character of credential) {
+        const value = character.codePointAt(0) ?? 0;
+        if ((value < 0x20 && value !== 0x09) || value === 0x7f || value > 0xff) {
+            throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
+        }
+    }
+}
+function createBedrockUserAbortError(signal) {
+    const error = new Errors.APIUserAbortError();
+    Object.defineProperty(error, 'cause', {
+        value: signal.reason,
+        writable: true,
+        configurable: true,
+    });
+    return error;
+}
+function removeBedrockAbortListener(signal, listener) {
+    try {
+        signal.removeEventListener('abort', listener);
+    }
+    catch {
+        // A nonstandard AbortSignal must not replace the actual request outcome.
+    }
+}
+function resolveAbortableBedrockAuth(operation, signals, failure) {
+    // oxlint-disable-next-line promise/avoid-new -- AbortSignal events require a Promise callback bridge.
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const listeners = [];
+        const removeListeners = () => {
+            while (listeners.length > 0) {
+                const registered = listeners.pop();
+                if (registered) {
+                    removeBedrockAbortListener(registered.signal, registered.listener);
+                }
+            }
+        };
+        failure.removeListeners = removeListeners;
+        const settle = (result) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if ('value' in result) {
+                resolve(result.value);
+            }
+            else {
+                removeListeners();
+                reject(result.error);
+            }
+        };
+        // oxlint-disable-next-line anti-slop/no-unknown-parameters -- Failures and rejection reasons can be arbitrary JavaScript values; preserve them until inspection or forwarding.
+        const rejectSignalFailure = (error) => {
+            if (failure.error) {
+                return;
+            }
+            failure.error = { value: error };
+            settle({ error });
+        };
+        const registerAbortListener = (signal) => {
+            const onAbort = () => {
+                if (failure.error) {
+                    return;
+                }
+                try {
+                    rejectSignalFailure(createBedrockUserAbortError(signal));
+                }
+                catch (error) {
+                    rejectSignalFailure(error);
+                }
+            };
+            try {
+                if (signal.aborted) {
+                    onAbort();
+                    return false;
+                }
+                listeners.push({ signal, listener: onAbort });
+                signal.addEventListener('abort', onAbort, { once: true });
+                if (settled) {
+                    removeBedrockAbortListener(signal, onAbort);
+                    return false;
+                }
+                if (signal.aborted) {
+                    onAbort();
+                    return false;
+                }
+            }
+            catch (error) {
+                if (settled) {
+                    removeBedrockAbortListener(signal, onAbort);
+                }
+                else {
+                    rejectSignalFailure(error);
+                }
+                return false;
+            }
+            return true;
+        };
+        for (const signal of signals) {
+            if (!registerAbortListener(signal)) {
+                return;
+            }
+        }
+        let pending;
+        try {
+            pending = operation();
+        }
+        catch (error) {
+            settle({ error });
+            return;
+        }
+        const observeResult = async () => {
+            try {
+                settle({ value: await pending });
+            }
+            catch (error) {
+                settle({ error });
+            }
+        };
+        // Observe the result even if the provider synchronously triggered cancellation.
+        void observeResult();
+    });
+}
+/**
+ * Resolves Bedrock authentication work with caller cancellation, then applies
+ * its result synchronously after the final cancellation checks.
+ *
+ * @internal
+ */
+async function prepareBedrockAuth(request, context, operation) {
+    const signals = [];
+    for (const signal of [context.options.signal, request.signal]) {
+        if (signal != null && !signals.includes(signal)) {
+            signals.push(signal);
+        }
+    }
+    const signalFailure = {};
+    let value;
+    try {
+        try {
+            value =
+                signals.length > 0
+                    ? await resolveAbortableBedrockAuth(operation.resolve, signals, signalFailure)
+                    : await operation.resolve();
+        }
+        catch (cause) {
+            if (signalFailure.error && Object.is(cause, signalFailure.error.value)) {
+                throw cause;
+            }
+            throw errorWithCause(operation.failureMessage, cause);
+        }
+        if (signalFailure.error) {
+            throw signalFailure.error.value;
+        }
+        for (const signal of signals) {
+            if (signal.aborted) {
+                throw createBedrockUserAbortError(signal);
+            }
+        }
+    }
+    finally {
+        signalFailure.removeListeners?.();
+    }
+    operation.apply(value);
+}
+class BedrockBearerAuth {
+    constructor(tokenProvider) {
+        this.tokenProvider = tokenProvider;
+    }
+    async prepareRequest(request, context) {
+        const headers = new Headers(request.headers);
+        assertProviderOwnsAuthorization(headers);
+        await prepareBedrockAuth(request, context, {
+            resolve: () => this.tokenProvider(),
+            failureMessage: 'Failed to resolve a bearer credential for Bedrock.',
+            apply: (token) => {
+                // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Bedrock credential and origin checks validate JavaScript configuration before any credential is sent.
+                if (typeof token !== 'string' || !token.trim()) {
+                    throw new Errors.OpenAIError('The Bedrock bearer credential provider must return a non-empty string.');
+                }
+                assertValidBedrockBearerCredential(token);
+                try {
+                    headers.set('authorization', `Bearer ${token}`);
+                }
+                catch (error) {
+                    if (error instanceof TypeError) {
+                        // oxlint-disable-next-line eslint/preserve-caught-error -- The original error contains the bearer credential.
+                        throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
+                    }
+                    throw error;
+                }
+                request.redirect = 'manual';
+                request.headers = headers;
+            },
+        });
+    }
+}
+/**
+ * Resolves a bearer-authentication factory without calling token providers eagerly.
+ *
+ * Explicit `tokenProvider` and `apiKey` options are mutually exclusive. When
+ * neither is set, `AWS_BEARER_TOKEN_BEDROCK` is used unless environment
+ * credentials are disabled or `apiKey` is explicitly `null`.
+ *
+ * @throws {Errors.OpenAIError} If an explicit key is empty or multiple bearer
+ * credential sources are configured.
+ */
+function resolveBedrockBearerAuth(options, { allowEnvironment = true, } = {}) {
+    if (options.apiKey !== undefined &&
+        options.apiKey !== null &&
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Bedrock credential and origin checks validate JavaScript configuration before any credential is sent.
+        (typeof options.apiKey !== 'string' || !options.apiKey.trim())) {
+        throw new Errors.OpenAIError('The Bedrock bearer credential must not be empty.');
+    }
+    if (options.apiKey != null && options.tokenProvider) {
+        throw new Errors.OpenAIError('The `apiKey` and `tokenProvider` options are mutually exclusive. Configure only one.');
+    }
+    if (options.tokenProvider) {
+        const tokenProvider = options.tokenProvider;
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- The declared bearer-auth contract hides concrete authenticator implementations behind their factory.
+        return { factory: () => new BedrockBearerAuth(tokenProvider), explicit: true };
+    }
+    if (options.apiKey != null) {
+        const apiKey = options.apiKey;
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- Explicit API keys use the same declared auth-factory contract as token providers.
+        return { factory: () => new BedrockBearerAuth(async () => apiKey), explicit: true };
+    }
+    if (allowEnvironment && options.apiKey !== null && readEnv('AWS_BEARER_TOKEN_BEDROCK')) {
+        // oxlint-disable-next-line anti-slop/no-known-value-widening -- Environment credentials must preserve the same declared auth-factory contract as explicit options.
+        return {
+            explicit: false,
+            factory: () => new BedrockBearerAuth(async () => {
+                const token = readEnv('AWS_BEARER_TOKEN_BEDROCK');
+                if (!token) {
+                    throw new Errors.OpenAIError('Could not find credentials for Bedrock. Set `AWS_BEARER_TOKEN_BEDROCK` or configure AWS credential authentication.');
+                }
+                return token;
+            }),
+        };
+    }
+    // oxlint-disable-next-line anti-slop/no-known-value-widening -- The declared optional factory contract also represents the absence of bearer credentials.
+    return { factory: undefined, explicit: false };
+}
+//# sourceMappingURL=bedrock.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/internal/realtime-credentials.mjs
+
+// Only the key crosses module formats: the context belongs to each participating client.
+const realtimeCacheContext = Symbol.for('openai.realtimeAPIKeyCacheContext');
+let cacheContext;
+/** Installs the Node transport's invocation context without loading Node in the base client. @internal */
+function setRealtimeAPIKeyCacheContext(context) {
+    cacheContext = context;
+}
+/** Reserves a deferred commit when the base hook is entered for this invocation. @internal */
+function getDeferredRealtimeAPIKeyCache(client) {
+    const deferred = client[realtimeCacheContext]?.getStore();
+    return deferred?.client === client ? deferred : undefined;
+}
+/** Applies the Bedrock getter's validation when a captured credential does not enter the cache. @internal */
+function validateCapturedAPIKey(client, credential) {
+    if (credential !== null && brand_privateBedrockClient in client) {
+        assertValidBedrockBearerCredential(credential);
+    }
+    return credential;
+}
+/** Selects a captured credential without treating an explicit null as absent. @internal */
+function getRealtimeAPIKey(client, captured) {
+    return captured === undefined ? client?.apiKey : captured;
+}
+/**
+ * Captures the key belonging to this request or factory invocation while retaining the
+ * existing boolean credential-hook contract. Legacy overrides that do not
+ * capture a key keep their shared-property behavior and remain responsible for
+ * synchronizing concurrent credential updates.
+ * @internal
+ */
+async function resolveRealtimeAPIKey(client, deferCache = false) {
+    let apiKey;
+    const current = {
+        client,
+        commit: () => (apiKey === undefined ? client.apiKey : apiKey),
+    };
+    const capture = (resolved) => {
+        apiKey = resolved;
+    };
+    const invoke = () => client._callApiKey(capture);
+    const context = client[realtimeCacheContext] ?? cacheContext;
+    if (deferCache && context && !client[realtimeCacheContext]) {
+        Object.defineProperty(client, realtimeCacheContext, { value: context });
+    }
+    // An HTTP or ordinary Realtime request nested inside a WebSocket hook owns its own cache writes.
+    const isProvider = await (context ? context.run(deferCache ? current : undefined, invoke) : invoke());
+    return {
+        apiKey: apiKey === undefined ? client.apiKey : apiKey,
+        isProvider,
+        commit: () => {
+            const hookKey = current.providerKey !== undefined && apiKey !== undefined && apiKey !== current.providerKey
+                ? validateCapturedAPIKey(client, apiKey)
+                : undefined;
+            const cached = current.commit();
+            return hookKey === undefined ? validateCapturedAPIKey(client, cached) : hookKey;
+        },
+    };
+}
+//# sourceMappingURL=realtime-credentials.mjs.map
+;// CONCATENATED MODULE: ./node_modules/openai/internal/ws.mjs
+
+
+const webSocketErrors = new WeakMap();
+/** Records physical failure before transport callbacks notify public observers. @internal */
+function recordWebSocketError(socket, error) {
+    webSocketErrors.set(socket, error);
+}
+/** Returns physical failure for this socket instance, never for a replacement. @internal */
+function getWebSocketError(socket) {
+    return webSocketErrors.get(socket);
+}
+/** Snapshots and validates the iterator's limit before listeners are attached. */
+function getMaxBufferedEvents(options) {
+    const limit = options?.maxBufferedEvents;
+    if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
+        throw new OpenAIError('maxBufferedEvents must be a positive safe integer');
+    }
+    return limit;
+}
+const REDIRECT_SAFE_WEBSOCKET_HEADERS = new Set([
+    'connection',
+    'host',
+    'openai-beta',
+    'origin',
+    'sec-websocket-extensions',
+    'sec-websocket-key',
+    'sec-websocket-version',
+    'upgrade',
+    'user-agent',
+    'x-access-level',
+    'x-auth-metadata',
+    'x-auth-tokenization',
+    'x-authentication-metadata',
+    'x-authentication-tokenization',
+    'x-security-policy',
+    'x-token-budget',
+    'x-trace-id',
+]);
+const WEBSOCKET_METADATA_HEADER_NAMES = new Set([
+    'accept',
+    'accept-encoding',
+    'accept-language',
+    'content-type',
+    'x-request-id',
+    'x-client-request-id',
+    'x-correlation-id',
+    'traceparent',
+    'tracestate',
+    'sentry-trace',
+    'x-amzn-trace-id',
+    'x-cloud-trace-context',
+    'x-datadog-trace-id',
+    'x-datadog-parent-id',
+    'x-datadog-sampling-priority',
+    'x-datadog-origin',
+    'x-datadog-tags',
+    'baggage',
+    'b3',
+]);
+// Request and tracing metadata do not authenticate a Responses socket, but remain protected on redirects.
+const WEBSOCKET_METADATA_HEADERS = {
+    has: (name, values) => WEBSOCKET_METADATA_HEADER_NAMES.has(name) ||
+        name.startsWith('x-b3-') ||
+        (name === 'sec-websocket-protocol' &&
+            !values.some((value) => typeof value === 'string' &&
+                value.split(',').some((protocol) => protocol.trim().startsWith('openai-insecure-api-key.')))),
+};
+function isWebSocketCredentialHeader(name) {
+    return !REDIRECT_SAFE_WEBSOCKET_HEADERS.has(name.toLowerCase().split('_').join('-'));
+}
+/**
+ * Snapshots credential values in final socket options before validation and dispatch.
+ * Reports potential caller authentication, excluding additional metadata when requested.
+ * The server remains responsible for validating credentials. Noncredential headers are left intact.
+ */
+function snapshotWebSocketCredentials(options, metadataHeaders) {
+    if (options.auth !== null && options.auth !== undefined) {
+        options.auth = String(options.auth);
+    }
+    const credentials = new Map();
+    const headers = options.headers ?? {};
+    for (const [name, value] of Object.entries(headers)) {
+        const normalizedName = name.toLowerCase().split('_').join('-');
+        // Routing metadata is still protected on redirects, but cannot authenticate a socket.
+        if (!isWebSocketCredentialHeader(name) ||
+            normalizedName === 'openai-organization' ||
+            normalizedName === 'openai-project') {
+            continue;
+        }
+        let snapshot = value;
+        if (Array.isArray(value)) {
+            snapshot = value.map(String);
+        }
+        else if (value !== null && value !== undefined) {
+            snapshot = String(value);
+        }
+        headers[name] = snapshot;
+        const values = Array.isArray(snapshot) ? snapshot : [snapshot];
+        if (!metadataHeaders?.has(normalizedName, values)) {
+            credentials.set(name.toLowerCase(), values.some((item) => typeof item === 'string' && item.trim().length > 0));
+        }
+    }
+    // Node applies header names case-insensitively, and Authorization overrides Basic auth.
+    return ([...credentials.values()].some(Boolean) ||
+        (!credentials.has('authorization') && typeof options.auth === 'string' && options.auth.trim().length > 0));
+}
+/** Merge transport authentication before explicit caller overrides and header removals. */
+function mergeWebSocketAuthHeaders(options, authHeaders, removedHeaders) {
+    const headers = new Map(Object.entries(authHeaders).map(([name, value]) => [name.toLowerCase(), value]));
+    for (const name of removedHeaders) {
+        headers.delete(name);
+    }
+    for (const [name, value] of Object.entries(options.headers ?? {})) {
+        headers.set(name, value);
+    }
+    return { ...options, headers: Object.fromEntries(headers) };
+}
+/** Removal sink for one synchronous header-hook call, including legacy one-argument overrides. */
+const webSocketHeaderRemovals = new WeakMap();
+const preparedWebSocketHeaders = new WeakMap();
+/** Build a WebSocket handshake with explicit caller headers applied after the client defaults. */
+function buildWebSocketOptions(client, authHeaders, options, removedHeaders, usePreparedHeaders = false) {
+    // Capture the base result even through older overrides that forward only one argument.
+    const previous = webSocketHeaderRemovals.get(client);
+    const prepared = usePreparedHeaders && options ? preparedWebSocketHeaders.get(options) : undefined;
+    const context = {
+        removedHeaders,
+        baseHeaders: prepared?.baseHeaders,
+    };
+    webSocketHeaderRemovals.set(client, context);
+    let headers;
+    try {
+        headers = new Map(Object.entries(client._buildWebSocketHeaders(authHeaders, removedHeaders)).map(([name, value]) => [
+            name.toLowerCase(),
+            value,
+        ]));
+    }
+    finally {
+        if (previous) {
+            webSocketHeaderRemovals.set(client, previous);
+        }
+        else {
+            webSocketHeaderRemovals.delete(client);
+        }
+    }
+    // The first hook output is not a caller override of the final, credentialed hook.
+    // Save transport names and explicit nulls separately, then reuse their validated values.
+    const transportHeaders = new Map();
+    const currentHeaders = new Map(Object.entries(options?.headers ?? {}));
+    const overrides = prepared
+        ? [...prepared.transportHeaders].map(([name, removed]) => [name, removed ? null : currentHeaders.get(name)])
+        : currentHeaders;
+    for (const [name, value] of overrides) {
+        const normalizedName = name.toLowerCase();
+        if (value === null) {
+            headers.delete(normalizedName);
+            removedHeaders?.add(normalizedName);
+            transportHeaders.set(normalizedName, true);
+        }
+        else if (value !== undefined) {
+            headers.set(normalizedName, value);
+            removedHeaders?.delete(normalizedName);
+            transportHeaders.set(normalizedName, false);
+        }
+    }
+    const result = {
+        ...options,
+        headers: Object.fromEntries(headers),
+        followRedirects: false,
+    };
+    preparedWebSocketHeaders.set(result, { baseHeaders: context.baseHeaders, transportHeaders });
+    return result;
+}
+/** Prevents WebSocket redirects from forwarding caller or SDK credentials to another origin. */
+function protectWebSocketOptionsFromCredentialRedirects(options) {
+    const hasSensitiveHeader = Object.keys(options.headers ?? {}).some(isWebSocketCredentialHeader);
+    if (!options.auth && !hasSensitiveHeader) {
+        return options;
+    }
+    return { ...options, followRedirects: false };
+}
+function toUint8Array(view) {
+    if (view instanceof Uint8Array) {
+        return view;
+    }
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+}
+/**
+ * Flatten `ArrayBufferView[]` fragments into a single `Uint8Array` so that
+ * `ws.send()` transmits the correct bytes.
+ */
+function flattenRawData(data) {
+    if (Array.isArray(data)) {
+        return concatBytes(data.map(toUint8Array));
+    }
+    return data;
+}
+function snapshotRawData(data) {
+    if (typeof data === 'string') {
+        return data;
+    }
+    if (Array.isArray(data)) {
+        return concatBytes(data.map(toUint8Array));
+    }
+    if (ArrayBuffer.isView(data)) {
+        const copy = new Uint8Array(data.byteLength);
+        copy.set(toUint8Array(data));
+        return copy;
+    }
+    // oxlint-disable-next-line unicorn/prefer-spread -- ArrayBufferLike.slice copies bytes while spread changes the return type.
+    return data.slice(0);
+}
+/** Counts wire bytes without allocating another payload-sized buffer. */
+function rawByteLength(data) {
+    if (typeof data === 'string') {
+        let bytes = 0;
+        for (let index = 0; index < data.length; index += 1) {
+            const code = data.codePointAt(index);
+            if (code < 128) {
+                bytes += 1;
+            }
+            else if (code < 2048) {
+                bytes += 2;
+            }
+            else if (code <= 65535) {
+                bytes += 3;
+            }
+            else {
+                bytes += 4;
+                index += 1;
+            }
+        }
+        return bytes;
+    }
+    if (Array.isArray(data)) {
+        return data.reduce((sum, buf) => sum + buf.byteLength, 0);
+    }
+    if ('byteLength' in data) {
+        return data.byteLength;
+    }
+    return 0;
+}
+/**
+ * Buffers outgoing WebSocket messages while a connection is unavailable.
+ *
+ * JSON values are serialized immediately, and raw binary payloads are copied,
+ * so later caller mutations cannot change queued messages. A single oversized
+ * message is accepted when the queue is empty; further messages are rejected
+ * whenever they would exceed the configured byte budget.
+ */
+class SendQueue {
+    /** Creates a queue with a one-mebibyte default byte budget. */
+    constructor(maxBytes = 1048576) {
+        this._queue = [];
+        this._bytes = 0;
+        this._maxBytes = maxBytes;
+    }
+    /**
+     * Serializes and snapshots a JSON message before queueing it.
+     *
+     * @returns `true` when accepted, including an oversized first message; `false`
+     * when adding it to a nonempty queue would exceed the byte budget.
+     */
+    enqueue(event) {
+        const data = JSON.stringify(event);
+        const byteLength = encodeUTF8(data).byteLength;
+        if (this._bytes + byteLength > this._maxBytes && this._queue.length > 0) {
+            return false;
+        }
+        this._queue.push({ kind: 'json', data, byteLength });
+        this._bytes += byteLength;
+        return true;
+    }
+    /**
+     * Queues a raw string or a defensive copy of a binary WebSocket payload.
+     * Fragmented typed-array payloads are flattened before storage.
+     *
+     * @returns `true` when accepted, including an oversized first frame; `false`
+     * when adding it to a nonempty queue would exceed the byte budget.
+     */
+    enqueueRaw(data) {
+        const snapshot = snapshotRawData(data);
+        const byteLength = rawByteLength(snapshot);
+        if (this._bytes + byteLength > this._maxBytes && this._queue.length > 0) {
+            return false;
+        }
+        this._queue.push({ kind: 'raw', data: snapshot, byteLength });
+        this._bytes += byteLength;
+        return true;
+    }
+    /**
+     * Send every queued message via `send`. If `send` throws, the failing
+     * message and all subsequent messages are re-queued and the error is
+     * re-thrown so the caller can report it. Endpoints that cannot safely replay
+     * an attempted write use `requeueFailed: false`. Never-attempted messages
+     * remain queued, including messages enqueued during the failed send.
+     */
+    flush(send, options) {
+        const pending = this._queue.splice(0);
+        this._bytes = 0;
+        for (let i = 0; i < pending.length; i++) {
+            try {
+                send(pending[i].data);
+            }
+            catch (err) {
+                const remaining = pending.slice(options?.requeueFailed === false ? i + 1 : i);
+                this._queue = [...remaining, ...this._queue];
+                this._bytes = this._queue.reduce((sum, item) => sum + item.byteLength, 0);
+                throw err;
+            }
+        }
+    }
+    /**
+     * Drain the queue and return the unsent messages. JSON messages are
+     * deserialized back to their original form. Resets byte tracking to zero.
+     */
+    drain() {
+        const unsent = this._queue.map((entry) => {
+            if (entry.kind === 'raw') {
+                return { type: 'raw', data: entry.data };
+            }
+            // SAFETY: T is the transport caller's event contract; JSON syntax is parsed here without imposing a runtime schema on forward-compatible events.
+            return { type: 'message', message: JSON.parse(entry.data) };
+        });
+        this._queue = [];
+        this._bytes = 0;
+        return unsent;
+    }
+}
+/**
+ * Reports whether an RFC 6455 close code represents a recoverable interruption.
+ *
+ * Network failures, service restarts, temporary server errors, and TLS
+ * handshake failures can be retried; normal closure, protocol violations,
+ * invalid payloads, and unrecognized codes cannot.
+ */
+function isRecoverableClose(code) {
+    switch (code) {
+        case 1000: {
+            return false;
+        } // Normal closure
+        case 1001: {
+            return true;
+        } // Going away (server shutting down)
+        case 1002: {
+            return false;
+        } // Protocol error
+        case 1003: {
+            return false;
+        } // Unsupported data
+        case 1005: {
+            return true;
+        } // No status code (abnormal)
+        case 1006: {
+            return true;
+        } // Abnormal closure (network drop)
+        case 1007: {
+            return false;
+        } // Invalid payload
+        case 1008: {
+            return false;
+        } // Policy violation
+        case 1009: {
+            return false;
+        } // Message too big
+        case 1010: {
+            return false;
+        } // Missing extension
+        case 1011: {
+            return true;
+        } // Internal server error
+        case 1012: {
+            return true;
+        } // Service restart
+        case 1013: {
+            return true;
+        } // Try again later
+        case 1015: {
+            return true;
+        } // TLS handshake failure
+        default: {
+            return false;
+        }
+    }
+}
+//# sourceMappingURL=ws.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/internal/provider.mjs
 /**
  * A provider factory such as `bedrock(options)` captures configuration in a
@@ -19791,7 +25821,9 @@ _Webhooks_instances = new WeakSet(), _Webhooks_validateSecret = function _Webhoo
  * provider configurations.
  */
 const providerDefinitionsKey = Symbol.for('openai.node.providerDefinitions.v1');
+// SAFETY: This versioned global symbol is the SDK-owned cross-copy WeakMap registry; no provider object fields are trusted through it.
 const providerGlobal = globalThis;
+// SAFETY: This versioned global symbol is the SDK-owned cross-copy WeakMap registry; no provider object fields are trusted through it.
 const existingProviderDefinitions = providerGlobal[providerDefinitionsKey];
 const providerDefinitions = existingProviderDefinitions ?? new WeakMap();
 if (!existingProviderDefinitions) {
@@ -19804,6 +25836,7 @@ if (!existingProviderDefinitions) {
  * installed copy of the SDK in the same JavaScript realm.
  */
 function createProvider(definition) {
+    // SAFETY: This function creates the opaque handle and immediately registers its identity in the private WeakMap, which is the runtime brand check.
     const provider = Object.freeze({});
     providerDefinitions.set(provider, definition);
     return provider;
@@ -19823,7 +25856,11 @@ function configureProvider(provider) {
 //# sourceMappingURL=provider.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/client.mjs
 // File generated from our OpenAPI spec by Castiron. See CONTRIBUTING.md for details.
-var _OpenAI_instances, client_a, _OpenAI_encoder, _OpenAI_x509Authentication, _OpenAI_x509Credential, _OpenAI_x509Fetch, _OpenAI_explicitDataResidency, _OpenAI_responseAttempts, _OpenAI_baseURLOverridden;
+var _OpenAI_instances, client_a, _OpenAI_encoder, _OpenAI_x509Authentication, _OpenAI_x509Credential, _OpenAI_x509Fetch, _OpenAI_explicitDataResidency, _OpenAI_responseAttempts, _OpenAI_sanitizedLoggers, _OpenAI_baseURLOverridden, _OpenAI_normalizeRetries, _OpenAI_isSensitiveLogKey, _OpenAI_sanitizeLogValue, _OpenAI_sanitizeLogger;
+
+
+
+
 
 
 
@@ -19928,6 +25965,9 @@ class OpenAI {
         // Preserve an explicit global selection without storing a second routing URL.
         _OpenAI_explicitDataResidency.set(this, false);
         _OpenAI_responseAttempts.set(this, new WeakMap());
+        this._apiKeyInvocation = 0;
+        this._lastCachedAPIKeyInvocation = 0;
+        this.decisions = new Decisions(this);
         /**
          * Given a prompt, the model will return one or more predicted completions, and can also return the probabilities of alternative tokens at each position.
          */
@@ -19970,6 +26010,9 @@ class OpenAI {
          */
         this.uploads = new Uploads(this);
         this.admin = new Admin(this);
+        /**
+         * Create and manage model responses.
+         */
         this.responses = new responses_Responses(this);
         this.live = new Live(this);
         this.realtime = new realtime_Realtime(this);
@@ -20049,7 +26092,7 @@ class OpenAI {
         this.baseURL = options.baseURL;
         __classPrivateFieldSet(this, _OpenAI_explicitDataResidency, residencyBaseURL !== undefined || inheritedResidencySelection, "f");
         this.timeout = options.timeout ?? client_a.DEFAULT_TIMEOUT; /* 10 minutes */
-        this.logger = options.logger ?? console;
+        this.logger = __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_sanitizeLogger).call(this, options.logger ?? console);
         const defaultLogLevel = 'warn';
         // Set default logLevel early so that we can log a warning in parseLogLevel.
         this.logLevel = defaultLogLevel;
@@ -20058,7 +26101,7 @@ class OpenAI {
                 parseLogLevel(env_readEnv('OPENAI_LOG'), "process.env['OPENAI_LOG']", this) ??
                 defaultLogLevel;
         this.fetchOptions = options.fetchOptions;
-        this.maxRetries = options.maxRetries ?? 2;
+        this.maxRetries = __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_normalizeRetries).call(this, options.maxRetries);
         this.fetch = options.fetch ?? getDefaultFetch();
         __classPrivateFieldSet(this, _OpenAI_encoder, FallbackEncoder, "f");
         const customHeadersEnv = provider || credential ? undefined : env_readEnv('OPENAI_CUSTOM_HEADERS');
@@ -20156,6 +26199,28 @@ class OpenAI {
     defaultQuery() {
         return this._options.defaultQuery;
     }
+    /** @internal Client request headers for each new WebSocket handshake. */
+    _buildWebSocketHeaders(authHeaders, removedHeaders) {
+        const context = webSocketHeaderRemovals.get(this);
+        if (context?.baseHeaders) {
+            return mergeWebSocketAuthHeaders({ headers: context.baseHeaders }, authHeaders, context.removedHeaders ?? new Set()).headers;
+        }
+        const headers = buildHeaders([
+            {
+                'User-Agent': this.getUserAgent(),
+                'OpenAI-Organization': this.organization,
+                'OpenAI-Project': this.project,
+            },
+            authHeaders,
+            this._options.defaultHeaders,
+        ]);
+        headers.nulls.forEach((name) => (removedHeaders ?? context?.removedHeaders)?.add(name));
+        const result = Object.fromEntries(headers.values);
+        if (context) {
+            context.baseHeaders = { ...result };
+        }
+        return result;
+    }
     validateHeaders({ values, nulls }, schemes = {
         bearerAuth: true,
         adminAPIKeyAuth: true,
@@ -20211,10 +26276,11 @@ class OpenAI {
                 : await authentication.getToken();
             return buildHeaders([{ Authorization: `Bearer ${token}` }]);
         }
-        if (this.apiKey == null) {
+        const { apiKey } = await resolveRealtimeAPIKey(this);
+        if (apiKey == null) {
             return undefined;
         }
-        return buildHeaders([{ Authorization: `Bearer ${this.apiKey}` }]);
+        return buildHeaders([{ Authorization: `Bearer ${apiKey}` }]);
     }
     async adminAPIKeyAuth(opts) {
         if (this.adminAPIKey == null) {
@@ -20235,12 +26301,12 @@ class OpenAI {
         const normalizedError = error && typeof error === 'object' && error.error == null ? { error } : error;
         return APIError.generate(status, normalizedError, message, headers);
     }
+    _hasApiKeyProvider() {
+        return typeof this._options.apiKey === 'function';
+    }
     /**
-     * Resolves a function-based API key and retains the resolved value on this client.
-     * Returns whether a provider was invoked. Internal callers can capture this
-     * invocation's key before another request updates the shared `apiKey` property.
-     * Overrides should forward `capture` or invoke it with their own resolved key
-     * to preserve connection-local credentials in concurrent Realtime factories.
+     * Resolves and retains a provider key, returning whether a provider was invoked.
+     * Overrides should forward `capture` (or call it with their resolved key) for local credentials.
      * @internal
      */
     async _callApiKey(capture) {
@@ -20253,6 +26319,8 @@ class OpenAI {
             capture?.(this.apiKey);
             return false;
         }
+        const deferredCache = getDeferredRealtimeAPIKeyCache(this);
+        const invocation = ++this._apiKeyInvocation;
         let token;
         try {
             token = await apiKey();
@@ -20267,36 +26335,86 @@ class OpenAI {
         if (typeof token !== 'string' || !token) {
             throw new error_OpenAIError(`Expected 'apiKey' function argument to return a string but it returned ${token}`);
         }
-        this.apiKey = token;
-        capture?.(this.apiKey);
+        const resolvedToken = token;
+        const commit = () => {
+            if (capture)
+                validateCapturedAPIKey(this, resolvedToken);
+            if (invocation < this._lastCachedAPIKeyInvocation) {
+                return resolvedToken;
+            }
+            this.apiKey = resolvedToken;
+            const cached = capture ? this.apiKey : resolvedToken;
+            this._lastCachedAPIKeyInvocation = invocation;
+            return cached;
+        };
+        if (deferredCache) {
+            deferredCache.providerKey = resolvedToken;
+            deferredCache.commit = commit;
+        }
+        const cached = deferredCache ? validateCapturedAPIKey(this, resolvedToken) : commit();
+        capture?.(cached);
         return true;
     }
     buildURL(path, query, defaultBaseURL) {
         const baseURL = (!__classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_baseURLOverridden).call(this) && defaultBaseURL) || this.baseURL;
-        const url = isAbsoluteURL(path)
-            ? new URL(path)
-            : new URL(baseURL + (baseURL.endsWith('/') && path.startsWith('/') ? path.slice(1) : path));
+        let url;
+        let baseQuery = {};
+        let baseParams;
+        if (isAbsoluteURL(path)) {
+            url = new URL(path);
+        }
+        else if (baseURL.includes('?')) {
+            const base = new URL(baseURL);
+            baseParams = new URLSearchParams(base.search);
+            baseQuery = Object.fromEntries(baseParams);
+            base.search = '';
+            base.hash = '';
+            url = new URL(base.toString() + (base.pathname.endsWith('/') && path.startsWith('/') ? path.slice(1) : path));
+        }
+        else {
+            url = new URL(baseURL + (baseURL.endsWith('/') && path.startsWith('/') ? path.slice(1) : path));
+        }
         const defaultQuery = this.defaultQuery();
         const pathQuery = Object.fromEntries(url.searchParams);
-        if (!isEmptyObj(defaultQuery) || !isEmptyObj(pathQuery)) {
-            query = { ...pathQuery, ...defaultQuery, ...query };
+        let overridingQuery;
+        if (!isEmptyObj(baseQuery) || !isEmptyObj(defaultQuery) || !isEmptyObj(pathQuery)) {
+            overridingQuery = { ...pathQuery, ...defaultQuery, ...query };
+            query = { ...baseQuery, ...overridingQuery };
         }
         if (typeof query === 'object' && query && !Array.isArray(query)) {
             url.search = this.stringifyQuery(query);
+            if (baseParams && overridingQuery) {
+                const seen = new Set();
+                const repeated = new Set();
+                for (const key of baseParams.keys()) {
+                    if (seen.has(key) && !hasOwn(overridingQuery, key)) {
+                        repeated.add(key);
+                    }
+                    seen.add(key);
+                }
+                if (repeated.size) {
+                    const merged = new URLSearchParams();
+                    for (const [key, value] of url.searchParams) {
+                        if (!repeated.has(key))
+                            merged.append(key, value);
+                    }
+                    for (const [key, value] of baseParams) {
+                        if (repeated.has(key))
+                            merged.append(key, value);
+                    }
+                    url.search = merged.toString();
+                }
+            }
         }
         return url.toString();
     }
     /**
      * Used as a callback for mutating the given `FinalRequestOptions` object.
+     * Function-based credentials are resolved later, when building authentication
+     * headers, including for direct `buildRequest()` calls. Overriding this hook
+     * does not bypass that resolution.
      */
-    async prepareOptions(options) {
-        if (this._provider)
-            return;
-        const security = options.__security ?? { bearerAuth: true };
-        if (security.bearerAuth) {
-            await this._callApiKey();
-        }
-    }
+    async prepareOptions(options) { }
     /**
      * Used as a callback for mutating the given `RequestInit` object.
      *
@@ -20431,7 +26549,7 @@ class OpenAI {
                 if (abortListener)
                     callerSignal?.removeEventListener('abort', abortListener);
                 abortListener = undefined;
-                const next = await this.retryRequest(props.options, retriesRemaining, props.retryOfRequestLogID ?? props.requestLogID);
+                const next = await this.retryRequest(props.options, retriesRemaining, props.retryOfRequestLogID ?? props.requestLogID, undefined, props.requestSignal);
                 Object.assign(props, next);
             }
             finally {
@@ -20484,9 +26602,12 @@ class OpenAI {
     }
     async makeRequest(optionsInput, retriesRemaining, retryOfRequestLogID) {
         const options = await optionsInput;
-        const maxRetries = options.maxRetries ?? this.maxRetries;
+        const maxRetries = __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_normalizeRetries).call(this, options.maxRetries ?? this.maxRetries);
         if (retriesRemaining == null) {
             retriesRemaining = maxRetries;
+        }
+        else {
+            retriesRemaining = Math.min(__classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_normalizeRetries).call(this, retriesRemaining), maxRetries);
         }
         const x509Authentication = __classPrivateFieldGet(this, _OpenAI_x509Authentication, "f");
         x509Authentication?.beginRequestPreparation();
@@ -20559,13 +26680,19 @@ class OpenAI {
         const requestLogID = 'log_' + ((Math.random() * (1 << 24)) | 0).toString(16).padStart(6, '0');
         const retryLogStr = retryOfRequestLogID === undefined ? '' : `, retryOf: ${retryOfRequestLogID}`;
         const startTime = x509Authentication?.requestStartedAt(options) ?? Date.now();
-        loggerFor(this).debug(`[${requestLogID}] sending request`, formatRequestDetails({
-            retryOfRequestLogID,
-            method: options.method,
-            url,
-            options: x509Authentication ? { body: req.body, ...x509Authentication.requestSnapshot() } : options,
-            headers: req.headers,
-        }));
+        if (this.logLevel === 'debug') {
+            // Summarize serialized strings without reparsing or re-running caller serialization hooks.
+            const body = typeof req.body === 'string' ? { type: 'string', length: req.body.length } : req.body;
+            loggerFor(this).debug(`[${requestLogID}] sending request`, formatRequestDetails({
+                retryOfRequestLogID,
+                method: options.method,
+                url,
+                options: x509Authentication
+                    ? { body, ...x509Authentication.requestSnapshot() }
+                    : { ...options, body },
+                headers: req.headers,
+            }));
+        }
         const callerSignal = x509Authentication ? x509Authentication.requestSnapshot().signal : options.signal;
         if (callerSignal?.aborted || req.signal?.aborted) {
             throw this._makeUserAbortError(callerSignal?.aborted ? callerSignal : req.signal);
@@ -20603,7 +26730,7 @@ class OpenAI {
                     durationMs: headersTime - startTime,
                     message: x509Authentication ? 'X.509 workload identity API connection failed.' : response.message,
                 }));
-                return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID);
+                return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID, undefined, req.signal);
             }
             const terminalMessage = hasStreamingBody
                 ? 'error; streaming body cannot be retried'
@@ -20699,7 +26826,7 @@ class OpenAI {
                     headers: response.headers,
                     durationMs: headersTime - startTime,
                 }));
-                return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID, response.headers);
+                return this.retryRequest(options, retriesRemaining, retryOfRequestLogID ?? requestLogID, response.headers, req.signal);
             }
             const retryMessage = shouldRetry
                 ? hasStreamingBody
@@ -20741,7 +26868,15 @@ class OpenAI {
             helperMethod: options.__metadata?.['helperMethod'],
             ...(continueRequest ? { continueRequest } : {}),
         });
-        return { response, options, controller, requestLogID, retryOfRequestLogID, startTime };
+        return {
+            response,
+            options,
+            controller,
+            requestSignal: req.signal,
+            requestLogID,
+            retryOfRequestLogID,
+            startTime,
+        };
     }
     getAPIList(path, Page, opts) {
         return this.requestAPIList(Page, opts && 'then' in opts
@@ -20785,8 +26920,7 @@ class OpenAI {
         const { signal, method, ...options } = init || {};
         const abort = this._makeAbort(controller);
         const composed = !!signal && composedCallerSignals.get(controller) === signal;
-        if (signal && !composed)
-            signal.addEventListener('abort', abort, { once: true });
+        const cleanup = signal && !composed ? addRequestAbortListener(signal, abort, controller.signal) : undefined;
         const timeout = setTimeout(abort, ms);
         const isReadableBody = (globalThis.ReadableStream && options.body instanceof globalThis.ReadableStream) ||
             (typeof options.body === 'object' && options.body !== null && Symbol.asyncIterator in options.body);
@@ -20803,11 +26937,14 @@ class OpenAI {
         }
         try {
             // use undefined this binding; fetch errors if bound to something else in browser/cloudflare
-            return await (__classPrivateFieldGet(this, _OpenAI_x509Fetch, "f") ?? this.fetch).call(undefined, url, fetchOptions);
+            const response = await (__classPrivateFieldGet(this, _OpenAI_x509Fetch, "f") ?? this.fetch).call(undefined, url, fetchOptions);
+            if (cleanup) {
+                retainRequestAbortCallback(response.body ?? response, abort, controller.signal);
+            }
+            return response;
         }
         catch (err) {
-            if (signal && !composed)
-                signal.removeEventListener('abort', abort);
+            cleanup?.();
             throw err;
         }
         finally {
@@ -20836,7 +26973,7 @@ class OpenAI {
             return true;
         return false;
     }
-    async retryRequest(options, retriesRemaining, requestLogID, responseHeaders) {
+    async retryRequest(options, retriesRemaining, requestLogID, responseHeaders, requestSignal = options.signal) {
         let timeoutMillis;
         // Note the `retry-after-ms` header may not be standard, but is a good idea and we'd like proactive support for it.
         const retryAfterMillisHeader = responseHeaders?.get('retry-after-ms');
@@ -20863,7 +27000,7 @@ class OpenAI {
             !Number.isFinite(timeoutMillis) ||
             timeoutMillis < 0 ||
             timeoutMillis > 60 * 1000) {
-            const maxRetries = options.maxRetries ?? this.maxRetries;
+            const maxRetries = __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_normalizeRetries).call(this, options.maxRetries ?? this.maxRetries);
             timeoutMillis = this.calculateDefaultRetryTimeoutMillis(retriesRemaining, maxRetries);
         }
         const x509Authentication = __classPrivateFieldGet(this, _OpenAI_x509Authentication, "f");
@@ -20877,7 +27014,17 @@ class OpenAI {
             await x509Authentication.waitForRetry(timeoutMillis, x509Authentication.effectiveSignal());
         }
         else {
-            await sleep(timeoutMillis);
+            const retrySignals = requestSignal === options.signal ? [requestSignal] : [requestSignal, options.signal];
+            try {
+                await sleep(timeoutMillis, ...retrySignals);
+            }
+            catch (error) {
+                const abortedSignal = retrySignals.find((signal) => signal?.aborted);
+                if (abortedSignal) {
+                    throw this._makeUserAbortError(abortedSignal);
+                }
+                throw error;
+            }
         }
         return this.makeRequest(options, retriesRemaining - 1, requestLogID);
     }
@@ -20891,6 +27038,12 @@ class OpenAI {
         const jitter = 1 - Math.random() * 0.25;
         return sleepSeconds * jitter * 1000;
     }
+    /**
+     * Builds a request, resolving callback credentials when constructing authentication
+     * headers, after any subclass request-option rewrites. Calling this method directly
+     * also resolves credentials. Complete replacement builders own authentication and
+     * can call `this.authHeaders()` to resolve headers with request-local credentials.
+     */
     async buildRequest(inputOptions, { retryCount = 0 } = {}) {
         if (__classPrivateFieldGet(this, _OpenAI_x509Authentication, "f") && !__classPrivateFieldGet(this, _OpenAI_x509Authentication, "f").inRequest(this)) {
             const authentication = __classPrivateFieldGet(this, _OpenAI_x509Authentication, "f");
@@ -20933,6 +27086,9 @@ class OpenAI {
                 options.signal = snapshot.signal;
             }
         }
+        const authenticationHeaders = this._provider || x509Authentication
+            ? undefined
+            : await this.authHeaders(inputOptions, inputOptions.__security ?? { bearerAuth: true });
         const { bodyHeaders, body, isStreamingBody } = this.buildBody({ options });
         if (isStreamingBody) {
             inputOptions.__metadata = {
@@ -20945,6 +27101,7 @@ class OpenAI {
             options: inputOptions,
             method,
             bodyHeaders,
+            authenticationHeaders,
             retryCount,
             x509Headers,
             x509Timeout: explicitTimeout ? options.timeout : undefined,
@@ -20962,7 +27119,7 @@ class OpenAI {
         };
         return { req, url, timeout: options.timeout };
     }
-    async buildHeaders({ options, method, bodyHeaders, retryCount, x509Headers, x509Timeout, x509Tenant, }) {
+    async buildHeaders({ options, method, bodyHeaders, authenticationHeaders, retryCount, x509Headers, x509Timeout, x509Tenant, }) {
         let idempotencyHeaders = {};
         if (this.idempotencyHeader && method !== 'get') {
             if (!options.idempotencyKey)
@@ -20983,9 +27140,10 @@ class OpenAI {
                 'OpenAI-Organization': x509Tenant ? x509Tenant.organization : this.organization,
                 'OpenAI-Project': x509Tenant ? x509Tenant.project : this.project,
             },
-            this._provider || __classPrivateFieldGet(this, _OpenAI_x509Authentication, "f")?.isPlanningRequest()
-                ? undefined
-                : await this.authHeaders(options, options.__security ?? { bearerAuth: true }),
+            // X.509 owns streaming uploads before authentication so it can retire them on failure.
+            __classPrivateFieldGet(this, _OpenAI_x509Authentication, "f") && !__classPrivateFieldGet(this, _OpenAI_x509Authentication, "f").isPlanningRequest()
+                ? await this.authHeaders(options, options.__security ?? { bearerAuth: true })
+                : authenticationHeaders,
             x509Headers?.defaultHeaders ?? this._options.defaultHeaders,
             bodyHeaders,
             x509Headers?.requestHeaders ?? options.headers,
@@ -21071,7 +27229,300 @@ client_a = OpenAI, _OpenAI_encoder = new WeakMap(), _OpenAI_x509Authentication =
     return (__classPrivateFieldGet(this, _OpenAI_explicitDataResidency, "f") ||
         this._provider !== undefined ||
         this.baseURL !== 'https://api.openai.com/v1');
+}, _OpenAI_normalizeRetries = function _OpenAI_normalizeRetries(value) {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 2;
+}, _OpenAI_isSensitiveLogKey = function _OpenAI_isSensitiveLogKey(key) {
+    const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    return /authorization|authentication|cookie|session|signature|assertion|connectionstring|devicecode|codeverifier|accountkey|mtlskey|proxyauth|(?:api|access|secret|private|security|refresh|id|bearer|aws|azure|openai|admin|client|proxy|auth)[a-z0-9]*(?:key|token|secret|password|passwd|pwd|credential|auth)|^(?:auth|key|sig|sas|jwt|bearer|pfx|p12)$|(?:sid|token|secret|password|passwd|pwd|credential|passphrase|apikey|accesskey|privatekey|username)s?$/.test(normalized);
+}, _OpenAI_sanitizeLogValue = function _OpenAI_sanitizeLogValue(value, seen) {
+    const maxDepth = 64;
+    const maxValues = 4096;
+    const redactString = (entry) => entry
+        .replace(/((?:[a-z][a-z0-9+.-]*:)?\/\/)([^/\s?#]*@)(?=[^/\s?#]+)/gi, '$1[REDACTED]@')
+        .replace(/(^|[\s(=])([^/\s]+:[^/\s]*@)(?=[^/\s@]+)/gi, '$1[REDACTED]@')
+        .replace(/(^|[\s,;])([a-z][a-z0-9_-]*)(\s*:\s*)([^\r\n,;]+)/gi, (match, prefix, key, separator) => __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, key) ? `${prefix}${key}${separator}[REDACTED]` : match)
+        .replace(/(^|[?&#;])([^=&;\s?#/]+)=([^&;\s#]+)/g, (match, separator, key) => {
+        let decoded = key;
+        try {
+            decoded = globalThis.decodeURIComponent(key);
+        }
+        catch { }
+        return __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, decoded) ? `${separator}${key}=[REDACTED]` : match;
+    });
+    const getLogString = (entry) => {
+        try {
+            return globalThis.String.prototype.valueOf.call(entry);
+        }
+        catch {
+            return undefined;
+        }
+    };
+    const isSensitiveLogLabel = (entry) => {
+        const label = getLogString(entry);
+        if (label !== undefined)
+            return __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, label);
+        try {
+            return entry instanceof globalThis.String;
+        }
+        catch {
+            return true;
+        }
+    };
+    const pending = [];
+    const pendingMaps = [];
+    let sanitizedValue;
+    const getOwnLogDescriptor = (entry, key) => {
+        try {
+            return {
+                descriptor: globalThis.Object.getOwnPropertyDescriptor(entry, key),
+                failed: false,
+            };
+        }
+        catch {
+            return { descriptor: undefined, failed: true };
+        }
+    };
+    const enqueue = (entry, depth, assign) => {
+        if (depth > maxDepth || pending.length >= maxValues) {
+            assign('[REDACTED]');
+            return;
+        }
+        pending.push({ value: entry, depth, assign });
+    };
+    enqueue(value, 0, (entry) => {
+        sanitizedValue = entry;
+    });
+    for (let cursor = 0; cursor < pending.length; cursor += 1) {
+        const { value: current, depth, assign } = pending[cursor];
+        if (typeof current === 'string') {
+            assign(redactString(current));
+            continue;
+        }
+        // Functions can carry inspection hooks; symbols can expose secret descriptions.
+        if (typeof current === 'function' || typeof current === 'symbol') {
+            assign('[REDACTED]');
+            continue;
+        }
+        if (typeof current !== 'object' || current === null) {
+            assign(current);
+            continue;
+        }
+        const previous = seen.get(current);
+        if (previous !== undefined) {
+            assign(previous);
+            continue;
+        }
+        // Brand checks and native operations can throw for caller-provided proxies.
+        try {
+            const boxedString = getLogString(current);
+            if (boxedString !== undefined) {
+                const sanitized = new globalThis.String(redactString(boxedString));
+                seen.set(current, sanitized);
+                assign(sanitized);
+                continue;
+            }
+            // Proxies and counterfeit String objects cannot expose their native payload.
+            // Do not let their indexed characters bypass whole-string redaction.
+            if (current instanceof globalThis.String) {
+                seen.set(current, '[REDACTED]');
+                assign('[REDACTED]');
+                continue;
+            }
+            const RuntimeHeaders = globalThis.Headers;
+            if (typeof RuntimeHeaders === 'function' && current instanceof RuntimeHeaders) {
+                const sanitized = new RuntimeHeaders();
+                seen.set(current, sanitized);
+                assign(sanitized);
+                RuntimeHeaders.prototype.forEach.call(current, (entry, key) => {
+                    sanitized.set(key, __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, key) ? '[REDACTED]' : redactString(entry));
+                });
+                continue;
+            }
+            if (current instanceof URL) {
+                const sanitized = new URL(URL.prototype.toString.call(current));
+                seen.set(current, sanitized);
+                assign(sanitized);
+                if (sanitized.username)
+                    sanitized.username = '[REDACTED]';
+                if (sanitized.password)
+                    sanitized.password = '[REDACTED]';
+                for (const [key] of sanitized.searchParams) {
+                    if (__classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, key))
+                        sanitized.searchParams.set(key, '[REDACTED]');
+                }
+                if (sanitized.hash)
+                    sanitized.hash = redactString(sanitized.hash);
+                continue;
+            }
+            if (Array.isArray(current)) {
+                const lengthDescriptor = getOwnLogDescriptor(current, 'length');
+                if (lengthDescriptor.failed ||
+                    !lengthDescriptor.descriptor ||
+                    !('value' in lengthDescriptor.descriptor) ||
+                    typeof lengthDescriptor.descriptor.value !== 'number') {
+                    seen.set(current, '[REDACTED]');
+                    assign('[REDACTED]');
+                    continue;
+                }
+                const sanitized = [];
+                seen.set(current, sanitized);
+                assign(sanitized);
+                const limit = Math.min(lengthDescriptor.descriptor.value, maxValues);
+                const firstDescriptor = getOwnLogDescriptor(current, '0');
+                const firstKey = !firstDescriptor.failed && firstDescriptor.descriptor && 'value' in firstDescriptor.descriptor
+                    ? firstDescriptor.descriptor.value
+                    : undefined;
+                for (let index = 0; index < limit; index += 1) {
+                    const property = index === 0 ? firstDescriptor : getOwnLogDescriptor(current, `${index}`);
+                    if (property.failed) {
+                        sanitized[index] = '[REDACTED]';
+                        continue;
+                    }
+                    const descriptor = property.descriptor;
+                    if (!descriptor?.enumerable)
+                        continue;
+                    if (index === 1 &&
+                        (firstDescriptor.failed ||
+                            (firstDescriptor.descriptor && !('value' in firstDescriptor.descriptor)) ||
+                            isSensitiveLogLabel(firstKey))) {
+                        sanitized[index] = '[REDACTED]';
+                        continue;
+                    }
+                    if (!('value' in descriptor)) {
+                        sanitized[index] = '[REDACTED]';
+                        continue;
+                    }
+                    enqueue(descriptor.value, depth + 1, (entry) => {
+                        sanitized[index] = entry;
+                    });
+                }
+                sanitized.length = limit;
+                if (lengthDescriptor.descriptor.value > limit)
+                    sanitized[limit] = '[REDACTED]';
+                continue;
+            }
+            if (current instanceof globalThis.Map) {
+                const sanitized = new globalThis.Map();
+                const entries = [];
+                pendingMaps.push({ map: sanitized, entries });
+                seen.set(current, sanitized);
+                assign(sanitized);
+                globalThis.Map.prototype.forEach.call(current, (entry, key) => {
+                    const pair = ['[REDACTED]', '[REDACTED]'];
+                    entries.push(pair);
+                    enqueue(key, depth + 1, (safeKey) => {
+                        // Unsupported values must not expose the original object as a key.
+                        if (typeof safeKey !== 'function' &&
+                            typeof safeKey !== 'symbol' &&
+                            !(typeof key === 'object' && key !== null && safeKey === key)) {
+                            pair[0] = safeKey;
+                        }
+                    });
+                    if (isSensitiveLogLabel(key)) {
+                        return;
+                    }
+                    enqueue(entry, depth + 1, (safeEntry) => {
+                        pair[1] = safeEntry;
+                    });
+                });
+                continue;
+            }
+            if (current instanceof globalThis.Set) {
+                const sanitized = new globalThis.Set();
+                seen.set(current, sanitized);
+                assign(sanitized);
+                globalThis.Set.prototype.forEach.call(current, (entry) => {
+                    enqueue(entry, depth + 1, (safeEntry) => {
+                        sanitized.add(safeEntry);
+                    });
+                });
+                continue;
+            }
+            if (current instanceof globalThis.Date) {
+                assign(new globalThis.Date(globalThis.Date.prototype.getTime.call(current)));
+                continue;
+            }
+            const RuntimeReadableStream = globalThis.ReadableStream;
+            if ((typeof RuntimeReadableStream === 'function' && current instanceof RuntimeReadableStream) ||
+                current instanceof globalThis.ArrayBuffer ||
+                globalThis.ArrayBuffer.isView(current)) {
+                // Opaque payloads may carry credentials or custom inspection hooks.
+                // Redact their log representation without reading or consuming them.
+                seen.set(current, '[REDACTED]');
+                assign('[REDACTED]');
+                continue;
+            }
+            let keys;
+            try {
+                keys = globalThis.Reflect.ownKeys(current);
+            }
+            catch {
+                seen.set(current, '[REDACTED]');
+                assign('[REDACTED]');
+                continue;
+            }
+            const sanitized = {};
+            seen.set(current, sanitized);
+            assign(sanitized);
+            for (const key of keys) {
+                if (typeof key !== 'string')
+                    continue;
+                const property = getOwnLogDescriptor(current, key);
+                if (property.failed) {
+                    sanitized[key] = '[REDACTED]';
+                    continue;
+                }
+                const descriptor = property.descriptor;
+                if (!descriptor?.enumerable)
+                    continue;
+                if (__classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_isSensitiveLogKey).call(this, key)) {
+                    sanitized[key] = '[REDACTED]';
+                    continue;
+                }
+                if (!('value' in descriptor)) {
+                    sanitized[key] = '[REDACTED]';
+                    continue;
+                }
+                enqueue(descriptor.value, depth + 1, (safeEntry) => {
+                    sanitized[key] = safeEntry;
+                });
+            }
+        }
+        catch {
+            seen.set(current, '[REDACTED]');
+            assign('[REDACTED]');
+        }
+    }
+    // Populate in input order after both keys and values have been sanitized.
+    // Budget fallbacks can assign immediately while earlier entries are queued.
+    for (const { map, entries } of pendingMaps) {
+        for (const [key, entry] of entries)
+            map.set(key, entry);
+    }
+    return sanitizedValue;
+}, _OpenAI_sanitizeLogger = function _OpenAI_sanitizeLogger(logger) {
+    if (__classPrivateFieldGet(client_a, client_a, "f", _OpenAI_sanitizedLoggers).has(logger))
+        return logger;
+    const sanitized = new globalThis.Proxy(Object.create(null), {
+        get: (_facade, property) => {
+            const value = globalThis.Reflect.get(logger, property, logger);
+            if (typeof value !== 'function')
+                return value;
+            if (typeof property !== 'string' ||
+                !['debug', 'info', 'warn', 'error', 'trace', 'log'].includes(property)) {
+                return value.bind(logger);
+            }
+            return (...args) => {
+                const seen = new WeakMap();
+                return globalThis.Reflect.apply(value, logger, args.map((entry) => __classPrivateFieldGet(this, _OpenAI_instances, "m", _OpenAI_sanitizeLogValue).call(this, entry, seen)));
+            };
+        },
+        set: (_facade, property, value) => globalThis.Reflect.set(logger, property, value, logger),
+    });
+    __classPrivateFieldGet(client_a, client_a, "f", _OpenAI_sanitizedLoggers).add(sanitized);
+    return sanitized;
 };
+_OpenAI_sanitizedLoggers = { value: new globalThis.WeakSet() };
 OpenAI.OpenAI = client_a;
 OpenAI.DEFAULT_TIMEOUT = 600000; // 10 minutes
 OpenAI.OpenAIError = error_OpenAIError;
@@ -21090,6 +27541,7 @@ OpenAI.UnprocessableEntityError = UnprocessableEntityError;
 OpenAI.InvalidWebhookSignatureError = InvalidWebhookSignatureError;
 OpenAI.toFile = toFile;
 OpenAI.toStreamingFile = toStreamingFile;
+OpenAI.Decisions = Decisions;
 OpenAI.Completions = completions_Completions;
 OpenAI.Chat = Chat;
 OpenAI.Embeddings = Embeddings;
@@ -21116,6 +27568,11 @@ OpenAI.Evals = Evals;
 OpenAI.Containers = Containers;
 OpenAI.Skills = Skills;
 OpenAI.Videos = Videos;
+OpenAI.ConversationCursorPage = ConversationCursorPage;
+OpenAI.CursorPage = CursorPage;
+OpenAI.NextCursorPage = NextCursorPage;
+OpenAI.Page = Page;
+OpenAI.TokenPage = TokenPage;
 const composedCallerSignals = new WeakMap();
 function createRequestController(callerSignal, originalSignal) {
     const controller = new AbortController();
@@ -21192,6 +27649,7 @@ class AzureOpenAI extends OpenAI {
         if (!apiVersion) {
             throw new error_OpenAIError("The OPENAI_API_VERSION environment variable is missing or empty; either provide it, or instantiate the AzureOpenAI client with an apiVersion option, like new AzureOpenAI({ apiVersion: 'My API Version' }).");
         }
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Azure accepts JavaScript credential configuration; distinguish static keys from callable token providers.
         if (typeof azureADTokenProvider === 'function') {
             dangerouslyAllowBrowser ?? (dangerouslyAllowBrowser = true);
         }
@@ -21222,6 +27680,7 @@ class AzureOpenAI extends OpenAI {
             apiKey: azureADTokenProvider ?? apiKey,
             baseURL,
             ...opts,
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(dangerouslyAllowBrowser === undefined ? {} : { dangerouslyAllowBrowser }),
         });
         /** Azure OpenAI API version included in requests made by this client. */
@@ -21272,6 +27731,7 @@ class AzureOpenAI extends OpenAI {
     }
     async authHeaders(opts, schemes) {
         const security = schemes ?? { bearerAuth: true, adminAPIKeyAuth: true };
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Azure accepts JavaScript credential configuration; distinguish static keys from callable token providers.
         if (security.bearerAuth && typeof this._options.apiKey === 'string') {
             return buildHeaders([{ 'api-key': this.apiKey }]);
         }
@@ -21305,417 +27765,9 @@ const _deployments_endpoints = new Set([
     '/images/edits',
 ]);
 //# sourceMappingURL=azure.mjs.map
-;// CONCATENATED MODULE: ./node_modules/openai/internal/bedrock.mjs
-
-
-/** Identifies legacy Bedrock clients without importing the client class into WebSocket modules. */
-const brand_privateBedrockClient = Symbol.for('openai.privateBedrockClient');
-/** Wraps a provider failure in an SDK error while preserving its original cause. */
-function errorWithCause(message, cause) {
-    const error = new Errors.OpenAIError(message);
-    error.cause = cause;
-    return error;
-}
-/** Trims a configuration string, treating missing and whitespace-only values as absent. */
-function normalizeOptionalString(value) {
-    const normalized = typeof value === 'string' ? value.trim() : undefined;
-    return normalized || undefined;
-}
-function normalizeBaseURL(baseURL) {
-    const url = new URL(baseURL);
-    const responsesMatch = url.pathname.match(/\/responses(?:\/.*)?$/);
-    if (responsesMatch?.index !== undefined) {
-        url.pathname = url.pathname.slice(0, responsesMatch.index) || '/';
-    }
-    return url.toString().replace(/\/$/, '');
-}
-function resolveRuntimeDnsSuffixes(region) {
-    if (region.startsWith('cn-')) {
-        return ['amazonaws.com.cn', 'api.amazonwebservices.com.cn'];
-    }
-    if (region.startsWith('eusc-')) {
-        return ['amazonaws.eu', 'api.amazonwebservices.eu'];
-    }
-    if (region.startsWith('us-iso-')) {
-        return ['c2s.ic.gov', 'api.aws.ic.gov'];
-    }
-    if (region.startsWith('us-isob-')) {
-        return ['sc2s.sgov.gov', 'api.aws.scloud'];
-    }
-    if (region.startsWith('eu-isoe-')) {
-        return ['cloud.adc-e.uk', 'api.cloud-aws.adc-e.uk'];
-    }
-    if (region.startsWith('us-isof-')) {
-        return ['csp.hci.ic.gov', 'api.aws.hci.ic.gov'];
-    }
-    return ['amazonaws.com', 'api.aws'];
-}
-/** Identifies a canonical Amazon Bedrock hostname and its embedded AWS region. */
-function parseBedrockEndpointHostname(hostname) {
-    const canonicalHostname = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
-    const [service, region, ...suffixParts] = canonicalHostname.toLowerCase().split('.');
-    const suffix = suffixParts.join('.');
-    if (service === 'bedrock-mantle' && region && /^[a-z0-9-]+$/.test(region) && suffix === 'api.aws') {
-        return { endpoint: 'mantle', region };
-    }
-    if ((service === 'bedrock-runtime' || service === 'bedrock-runtime-fips') && region) {
-        const [standardSuffix, dualStackSuffix] = resolveRuntimeDnsSuffixes(region);
-        if (suffix === standardSuffix || suffix === dualStackSuffix) {
-            return { endpoint: 'runtime', region };
-        }
-    }
-    return undefined;
-}
-/** Rejects insecure or mismatched canonical Amazon Bedrock endpoint overrides. */
-function validateCanonicalBedrockEndpoint(baseURL, endpoint, region) {
-    const parsedBaseURL = new URL(baseURL);
-    const canonicalEndpoint = parseBedrockEndpointHostname(parsedBaseURL.hostname);
-    if (canonicalEndpoint && parsedBaseURL.protocol !== 'https:') {
-        throw new Errors.OpenAIError('Canonical Amazon Bedrock endpoints require HTTPS.');
-    }
-    if (canonicalEndpoint && canonicalEndpoint.endpoint !== endpoint) {
-        throw new Errors.OpenAIError(`The Bedrock ${canonicalEndpoint.endpoint} hostname does not match the selected \`${endpoint}\` endpoint. Set \`endpoint: '${canonicalEndpoint.endpoint}'\` to use this hostname.`);
-    }
-    if (canonicalEndpoint && region && canonicalEndpoint.region !== region) {
-        throw new Errors.OpenAIError(`The Bedrock endpoint region \`${canonicalEndpoint.region}\` does not match the configured AWS region \`${region}\`.`);
-    }
-}
-function validateBedrockEndpointSelection(endpoint) {
-    if (endpoint !== undefined && endpoint !== 'mantle' && endpoint !== 'runtime') {
-        throw new Errors.OpenAIError('The Bedrock `endpoint` must be either `mantle` or `runtime`.');
-    }
-}
-/**
- * Resolves the Bedrock endpoint family, region, and API root from configuration.
- *
- * Region precedence is `region`, `AWS_REGION`, then `AWS_DEFAULT_REGION`.
- * Endpoint precedence is `baseURL`, `AWS_BEDROCK_BASE_URL`, then the regional
- * selected endpoint; an explicit `null` base URL skips the environment override.
- * Existing `/responses` suffixes and trailing slashes are removed. Canonical
- * AWS hostnames infer the endpoint family when none is selected explicitly.
- * Other configured URLs and derived endpoints default to Mantle.
- *
- * @throws {Errors.OpenAIError} If an option is invalid, a canonical hostname
- * conflicts with the endpoint family, or the default endpoint needs a region.
- */
-function resolveBedrockEndpoint(options) {
-    validateBedrockEndpointSelection(options.endpoint);
-    if (options.region !== undefined && !normalizeOptionalString(options.region)) {
-        throw new Errors.OpenAIError('The Bedrock AWS `region` must not be empty.');
-    }
-    if (options.baseURL !== undefined &&
-        options.baseURL !== null &&
-        !normalizeOptionalString(options.baseURL)) {
-        throw new Errors.OpenAIError('The Bedrock `baseURL` must not be empty.');
-    }
-    const region = normalizeOptionalString(options.region) ??
-        normalizeOptionalString(readEnv('AWS_REGION')) ??
-        normalizeOptionalString(readEnv('AWS_DEFAULT_REGION'));
-    if (region && !/^[a-z]{2,8}(?:-[a-z0-9]+)+-\d+$/.test(region)) {
-        throw new Errors.OpenAIError('The Bedrock AWS `region` is invalid. Use a standard AWS region such as `us-east-1`.');
-    }
-    const configuredBaseURL = options.baseURL === undefined
-        ? normalizeOptionalString(readEnv('AWS_BEDROCK_BASE_URL'))
-        : normalizeOptionalString(options.baseURL);
-    if (configuredBaseURL) {
-        const baseURL = normalizeBaseURL(configuredBaseURL);
-        const endpoint = options.endpoint ?? parseBedrockEndpointHostname(new URL(baseURL).hostname)?.endpoint ?? 'mantle';
-        validateCanonicalBedrockEndpoint(baseURL, endpoint, region);
-        return { endpoint, region, baseURL };
-    }
-    const endpoint = options.endpoint ?? 'mantle';
-    if (!region) {
-        throw new Errors.OpenAIError('Bedrock requires an AWS region. Pass `region` to `bedrock(...)`, or set `AWS_REGION` or `AWS_DEFAULT_REGION`.');
-    }
-    const hostname = endpoint === 'runtime'
-        ? `bedrock-runtime.${region}.${resolveRuntimeDnsSuffixes(region)[0]}`
-        : `bedrock-mantle.${region}.api.aws`;
-    return { endpoint, region, baseURL: `https://${hostname}/openai/v1` };
-}
-/**
- * Ensures Bedrock credentials are only attached to the configured endpoint origin.
- *
- * @throws {Errors.OpenAIError} If either URL is not HTTP(S) or the request targets a different origin.
- */
-function assertBedrockRequestOrigin(baseURL, requestURL) {
-    const expectedURL = new URL(baseURL);
-    const request = new URL(requestURL);
-    const expectedOrigin = expectedURL.origin;
-    const requestOrigin = request.origin;
-    if ((expectedURL.protocol !== 'http:' && expectedURL.protocol !== 'https:') ||
-        (request.protocol !== 'http:' && request.protocol !== 'https:') ||
-        requestOrigin !== expectedOrigin) {
-        throw new error_OpenAIError(`Bedrock request origin \`${requestOrigin}\` does not match the configured base URL origin \`${expectedOrigin}\`.`);
-    }
-}
-/** Validates a final WebSocket URL before a legacy Bedrock client resolves or attaches credentials. */
-function assertBedrockWebSocketOrigin(client, requestURL) {
-    if (typeof client !== 'object' || client === null || !(brand_privateBedrockClient in client)) {
-        return;
-    }
-    const normalizedRequestURL = new URL(requestURL);
-    if (normalizedRequestURL.protocol === 'wss:') {
-        normalizedRequestURL.protocol = 'https:';
-    }
-    else if (normalizedRequestURL.protocol === 'ws:') {
-        normalizedRequestURL.protocol = 'http:';
-    }
-    assertBedrockRequestOrigin(client.baseURL, normalizedRequestURL.toString());
-}
-/**
- * Rejects caller-provided authorization headers that conflict with provider authentication.
- *
- * @throws {Errors.OpenAIError} If an `Authorization` header is already present.
- */
-function assertProviderOwnsAuthorization(headers) {
-    if (headers.has('authorization')) {
-        throw new Errors.OpenAIError('Bedrock provider authentication cannot be combined with a custom `Authorization` header.');
-    }
-}
-/** Rejects non-HTTP field bytes without retaining or exposing a bearer credential. */
-function assertValidBedrockBearerCredential(credential) {
-    if (/^[\t ]|[\t ]$/.test(credential)) {
-        throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
-    }
-    for (const character of credential) {
-        const value = character.codePointAt(0) ?? 0;
-        if ((value < 0x20 && value !== 0x09) || value === 0x7f || value > 0xff) {
-            throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
-        }
-    }
-}
-function createBedrockUserAbortError(signal) {
-    const error = new Errors.APIUserAbortError();
-    Object.defineProperty(error, 'cause', {
-        value: signal.reason,
-        writable: true,
-        configurable: true,
-    });
-    return error;
-}
-function removeBedrockAbortListener(signal, listener) {
-    try {
-        signal.removeEventListener('abort', listener);
-    }
-    catch {
-        // A nonstandard AbortSignal must not replace the actual request outcome.
-    }
-}
-function resolveAbortableBedrockAuth(operation, signals, failure) {
-    // oxlint-disable-next-line promise/avoid-new -- AbortSignal events require a Promise callback bridge.
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        const listeners = [];
-        const removeListeners = () => {
-            while (listeners.length > 0) {
-                const registered = listeners.pop();
-                if (registered) {
-                    removeBedrockAbortListener(registered.signal, registered.listener);
-                }
-            }
-        };
-        failure.removeListeners = removeListeners;
-        const settle = (result) => {
-            if (settled) {
-                return;
-            }
-            settled = true;
-            if ('value' in result) {
-                resolve(result.value);
-            }
-            else {
-                removeListeners();
-                reject(result.error);
-            }
-        };
-        const rejectSignalFailure = (error) => {
-            if (failure.error) {
-                return;
-            }
-            failure.error = { value: error };
-            settle({ error });
-        };
-        const registerAbortListener = (signal) => {
-            const onAbort = () => {
-                if (failure.error) {
-                    return;
-                }
-                try {
-                    rejectSignalFailure(createBedrockUserAbortError(signal));
-                }
-                catch (error) {
-                    rejectSignalFailure(error);
-                }
-            };
-            try {
-                if (signal.aborted) {
-                    onAbort();
-                    return false;
-                }
-                listeners.push({ signal, listener: onAbort });
-                signal.addEventListener('abort', onAbort, { once: true });
-                if (settled) {
-                    removeBedrockAbortListener(signal, onAbort);
-                    return false;
-                }
-                if (signal.aborted) {
-                    onAbort();
-                    return false;
-                }
-            }
-            catch (error) {
-                if (settled) {
-                    removeBedrockAbortListener(signal, onAbort);
-                }
-                else {
-                    rejectSignalFailure(error);
-                }
-                return false;
-            }
-            return true;
-        };
-        for (const signal of signals) {
-            if (!registerAbortListener(signal)) {
-                return;
-            }
-        }
-        let pending;
-        try {
-            pending = operation();
-        }
-        catch (error) {
-            settle({ error });
-            return;
-        }
-        const observeResult = async () => {
-            try {
-                settle({ value: await pending });
-            }
-            catch (error) {
-                settle({ error });
-            }
-        };
-        // Observe the result even if the provider synchronously triggered cancellation.
-        void observeResult();
-    });
-}
-/**
- * Resolves Bedrock authentication work with caller cancellation, then applies
- * its result synchronously after the final cancellation checks.
- *
- * @internal
- */
-async function prepareBedrockAuth(request, context, operation) {
-    const signals = [];
-    for (const signal of [context.options.signal, request.signal]) {
-        if (signal != null && !signals.includes(signal)) {
-            signals.push(signal);
-        }
-    }
-    const signalFailure = {};
-    let value;
-    try {
-        try {
-            value =
-                signals.length > 0
-                    ? await resolveAbortableBedrockAuth(operation.resolve, signals, signalFailure)
-                    : await operation.resolve();
-        }
-        catch (cause) {
-            if (signalFailure.error && Object.is(cause, signalFailure.error.value)) {
-                throw cause;
-            }
-            throw errorWithCause(operation.failureMessage, cause);
-        }
-        if (signalFailure.error) {
-            throw signalFailure.error.value;
-        }
-        for (const signal of signals) {
-            if (signal.aborted) {
-                throw createBedrockUserAbortError(signal);
-            }
-        }
-    }
-    finally {
-        signalFailure.removeListeners?.();
-    }
-    operation.apply(value);
-}
-class BedrockBearerAuth {
-    constructor(tokenProvider) {
-        this.tokenProvider = tokenProvider;
-    }
-    async prepareRequest(request, context) {
-        const headers = new Headers(request.headers);
-        assertProviderOwnsAuthorization(headers);
-        await prepareBedrockAuth(request, context, {
-            resolve: () => this.tokenProvider(),
-            failureMessage: 'Failed to resolve a bearer credential for Bedrock.',
-            apply: (token) => {
-                if (typeof token !== 'string' || !token.trim()) {
-                    throw new Errors.OpenAIError('The Bedrock bearer credential provider must return a non-empty string.');
-                }
-                assertValidBedrockBearerCredential(token);
-                try {
-                    headers.set('authorization', `Bearer ${token}`);
-                }
-                catch (error) {
-                    if (error instanceof TypeError) {
-                        // oxlint-disable-next-line eslint/preserve-caught-error -- The original error contains the bearer credential.
-                        throw new TypeError('Bedrock bearer credential contains an invalid HTTP header value.');
-                    }
-                    throw error;
-                }
-                request.redirect = 'manual';
-                request.headers = headers;
-            },
-        });
-    }
-}
-/**
- * Resolves a bearer-authentication factory without calling token providers eagerly.
- *
- * Explicit `tokenProvider` and `apiKey` options are mutually exclusive. When
- * neither is set, `AWS_BEARER_TOKEN_BEDROCK` is used unless environment
- * credentials are disabled or `apiKey` is explicitly `null`.
- *
- * @throws {Errors.OpenAIError} If an explicit key is empty or multiple bearer
- * credential sources are configured.
- */
-function resolveBedrockBearerAuth(options, { allowEnvironment = true, } = {}) {
-    if (options.apiKey !== undefined &&
-        options.apiKey !== null &&
-        (typeof options.apiKey !== 'string' || !options.apiKey.trim())) {
-        throw new Errors.OpenAIError('The Bedrock bearer credential must not be empty.');
-    }
-    if (options.apiKey != null && options.tokenProvider) {
-        throw new Errors.OpenAIError('The `apiKey` and `tokenProvider` options are mutually exclusive. Configure only one.');
-    }
-    if (options.tokenProvider) {
-        const tokenProvider = options.tokenProvider;
-        return { factory: () => new BedrockBearerAuth(tokenProvider), explicit: true };
-    }
-    if (options.apiKey != null) {
-        const apiKey = options.apiKey;
-        return { factory: () => new BedrockBearerAuth(async () => apiKey), explicit: true };
-    }
-    if (allowEnvironment && options.apiKey !== null && readEnv('AWS_BEARER_TOKEN_BEDROCK')) {
-        return {
-            explicit: false,
-            factory: () => new BedrockBearerAuth(async () => {
-                const token = readEnv('AWS_BEARER_TOKEN_BEDROCK');
-                if (!token) {
-                    throw new Errors.OpenAIError('Could not find credentials for Bedrock. Set `AWS_BEARER_TOKEN_BEDROCK` or configure AWS credential authentication.');
-                }
-                return token;
-            }),
-        };
-    }
-    return { factory: undefined, explicit: false };
-}
-//# sourceMappingURL=bedrock.mjs.map
 ;// CONCATENATED MODULE: ./node_modules/openai/bedrock.mjs
 var bedrock_a;
+
 
 
 
@@ -21754,6 +27806,7 @@ function addBedrockOutputText(response) {
 /** Keep the standard Responses surface while repairing Bedrock streamed final responses. */
 function restoreBedrockStreamOutputText(responses) {
     const stream = responses.stream.bind(responses);
+    // SAFETY: The wrapper forwards the original stream parameters and preserves its generic result, only repairing the final response's output_text property.
     responses.stream = ((body, options) => {
         const responseStream = stream(body, options);
         const finalResponse = responseStream.finalResponse.bind(responseStream);
@@ -21780,6 +27833,8 @@ class BedrockOpenAI extends OpenAI {
         if (apiKey === undefined && !bedrockTokenProvider) {
             apiKey = env_readEnv('AWS_BEARER_TOKEN_BEDROCK') ?? null;
         }
+        // SAFETY: The widening keeps a runtime guard for JavaScript callers that supply an API-key function despite the declared string contract.
+        // oxlint-disable-next-line anti-slop/no-runtime-typeof -- Reject a JavaScript function supplied as a static Bedrock API key before it can become a credential.
         if (typeof apiKey === 'function') {
             throw new error_OpenAIError('Pass refreshable Bedrock credentials via `bedrockTokenProvider`, not `apiKey`.');
         }
@@ -21835,22 +27890,24 @@ class BedrockOpenAI extends OpenAI {
     async prepareOptions(options) {
         const configuredBaseURL = this._options.baseURL ?? this.baseURL;
         assertBedrockRequestOrigin(configuredBaseURL, this.buildURL(options.path, null, options.defaultBaseURL));
-        const security = options.__security ?? { bearerAuth: true };
-        if (security.adminAPIKeyAuth && !security.bearerAuth) {
-            await this._callApiKey();
-        }
         await super.prepareOptions(options);
         assertBedrockRequestOrigin(configuredBaseURL, this.buildURL(options.path, null, options.defaultBaseURL));
     }
     async prepareRequest(request, context) {
         assertBedrockRequestOrigin(this._options.baseURL ?? this.baseURL, context.url);
         await super.prepareRequest(request, context);
+        assertBedrockRequestOrigin(this._options.baseURL ?? this.baseURL, this.buildURL(context.options.path, null, context.options.defaultBaseURL));
         request.redirect = 'manual';
     }
     async authHeaders(opts, schemes) {
         const security = schemes ?? { bearerAuth: true, adminAPIKeyAuth: true };
-        const credential = this.apiKey;
-        if ((security.bearerAuth || security.adminAPIKeyAuth) && credential !== null) {
+        if (security.bearerAuth || security.adminAPIKeyAuth) {
+            assertBedrockRequestOrigin(this._options.baseURL ?? this.baseURL, this.buildURL(opts.path, null, opts.defaultBaseURL));
+            const { apiKey: credential } = await resolveRealtimeAPIKey(this);
+            assertBedrockRequestOrigin(this._options.baseURL ?? this.baseURL, this.buildURL(opts.path, null, opts.defaultBaseURL));
+            if (credential === null) {
+                return undefined;
+            }
             assertValidBedrockBearerCredential(credential);
             try {
                 return buildHeaders([{ Authorization: `Bearer ${credential}` }]);
@@ -21868,8 +27925,10 @@ class BedrockOpenAI extends OpenAI {
     /** Clones this client while preserving its refreshable Bedrock token provider when appropriate. */
     withOptions(options) {
         const bedrockTokenProvider = options.apiKey === undefined ? (options.bedrockTokenProvider ?? this.bedrockTokenProvider) : undefined;
+        // SAFETY: Bedrock options extend the base client options; forwarding them preserves the subclass's existing withOptions construction behavior.
         return super.withOptions({
             ...options,
+            // Spread creates an own data property without invoking inherited setters or changing the object prototype.
             ...(bedrockTokenProvider ? { apiKey: undefined, bedrockTokenProvider } : {}),
         });
     }
@@ -21891,4 +27950,4 @@ bedrock_a = brand_privateBedrockClient;
 
 };
 ;
-//# sourceMappingURL=379.index.js.map
+//# sourceMappingURL=619.index.js.map
