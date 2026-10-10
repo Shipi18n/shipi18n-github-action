@@ -10567,7 +10567,7 @@ var binary = __webpack_require__(6083);
 var merge = __webpack_require__(452);
 var omap = __webpack_require__(303);
 var pairs = __webpack_require__(8385);
-var schema$2 = __webpack_require__(8294);
+var schema$2 = __webpack_require__(5913);
 var set = __webpack_require__(1528);
 var timestamp = __webpack_require__(4371);
 
@@ -11166,7 +11166,7 @@ exports.resolvePairs = resolvePairs;
 
 /***/ }),
 
-/***/ 8294:
+/***/ 5913:
 /***/ ((__unused_webpack_module, exports, __webpack_require__) => {
 
 "use strict";
@@ -12968,7 +12968,7 @@ function openaiAdapter(config = {}) {
   let clientPromise = null
   const getClient = async () => {
     if (!clientPromise) {
-      clientPromise = __webpack_require__.e(/* import() */ 379).then(__webpack_require__.bind(__webpack_require__, 8379))
+      clientPromise = __webpack_require__.e(/* import() */ 619).then(__webpack_require__.bind(__webpack_require__, 2619))
         .then(
           ({ default: OpenAI }) =>
             new OpenAI({
