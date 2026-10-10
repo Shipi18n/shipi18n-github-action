@@ -37200,7 +37200,7 @@ module.exports = require("util");
 /***/ ((module) => {
 
 "use strict";
-module.exports = {"rE":"3.2.3"};
+module.exports = {"rE":"3.2.4"};
 
 /***/ })
 

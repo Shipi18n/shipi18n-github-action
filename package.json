@@ -1,6 +1,6 @@
 {
   "name": "shipi18n-github-action",
-  "version": "3.2.3",
+  "version": "3.2.4",
   "description": "GitHub Action: check i18n locale files in CI (no API key) — missing keys, placeholder drift, collapsed plurals — with SARIF output. Optionally translate with your own LLM key.",
   "main": "dist/index.js",
   "scripts": {
